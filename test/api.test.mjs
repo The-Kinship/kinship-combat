@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
 function database(){const sqlite=new DatabaseSync(':memory:');sqlite.exec(fs.readFileSync(new URL('../migrations/0001_init.sql',import.meta.url),'utf8'));return {sqlite,prepare(sql){const statement=sqlite.prepare(sql);let args=[];return {bind(...values){args=values;return this},async first(){return statement.get(...args)||null},async run(){return {meta:{changes:Number(statement.run(...args).changes)}}}}}}}
-function client(db){return async(path,data,token)=>{const response=await handle(new Request('https://kinship.test/api'+path,{method:data===undefined?'GET':'POST',headers:{...(data===undefined?{}:{'Content-Type':'application/json','Origin':'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db);return {status:response.status,...await response.json()}}}
+function client(db){return async(path,data,token)=>{const response=await handle(new Request('https://kinship.test/api'+path,{method:data===undefined?'GET':'POST',headers:{...(data===undefined?{}:{'Content-Type':'application/json','Origin':'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(path==='/rooms'&&data.createPassword===undefined?{...data,createPassword:'letmein'}:data)}),db,'letmein');return {status:response.status,...await response.json()}}}
 
 // Builds a room with a DM and one joined player, adds the cast, applies settings, and (optionally) starts.
 async function scene(t,{kind='classic',minutes,cast,start=true}={}){
@@ -163,7 +163,7 @@ test('database compare-and-swap prevents lost updates and duplicate rolls',async
 test('invalid writes and cross-origin requests leave the room unchanged',async t=>{
   const c=await scene(t,{cast:HERO_NPC,start:false});
   const request=new Request('https://kinship.test/api/rooms',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://other.test'},body:JSON.stringify({name:'Bad',encounter:'Bad'})});
-  assert.equal((await handle(request,c.db)).status,403);
+  assert.equal((await handle(request,c.db,'letmein')).status,403);
   assert.equal((await c.act('settings',{name:'Nope',mode:'manual',notes:'',location:'',kind:'bogus'})).status,400);
   assert.equal((await c.act('settings',{name:'Nope',mode:'manual',notes:'',location:'',kind:'timed',minutes:0})).status,400);
   assert.equal((await c.view()).room.name,'Test fight');

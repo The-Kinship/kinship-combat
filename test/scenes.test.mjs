@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
 function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
-const mk=db=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db);return {status:r.status,...await r.json()}};
+const mk=db=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(path==='/scenes'&&data.createPassword===undefined?{...data,createPassword:'letmein'}:data)}),db,'letmein');return {status:r.status,...await r.json()}};
 
 async function scene(call,title='Mansion RP',players=['Ash','Bryn','Cole']){
   const dm=await call('POST','/scenes',{name:'Mira',title});assert.equal(dm.status,201);
@@ -88,10 +88,35 @@ test('leaving removes you from the DM list, and closing deletes the scene for ev
 
 test('cross-origin writes are refused and stale scenes are cleared',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
-  const bad=await handle(new Request('https://kinship.test/api/scenes',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://other.test'},body:JSON.stringify({name:'x',title:'y'})}),db);
+  const bad=await handle(new Request('https://kinship.test/api/scenes',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://other.test'},body:JSON.stringify({name:'x',title:'y',createPassword:'letmein'})}),db,'letmein');
   assert.equal(bad.status,403);
   const s=await scene(call,'Old',['Ash']);
   db.sqlite.prepare('UPDATE scenes SET updated_at = ? WHERE code = ?').run(new Date(Date.now()-8*86400000).toISOString(),s.code);
   await call('POST','/scenes',{name:'New',title:'Fresh'});
   assert.equal((await call('GET',`/scenes/${s.code}?after=0`,undefined,s.dm.token)).status,404);
+});
+
+test('creating needs the creation password, but joining only needs a code',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());
+  const raw=(pw,expected='letmein')=>async(path,data)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://kinship.test'},body:JSON.stringify(pw===undefined?data:{...data,createPassword:pw})}),db,expected);return {status:r.status,...await r.json()}};
+  assert.equal((await raw(undefined)('/scenes',{name:'x',title:'y'})).status,403);
+  assert.equal((await raw('wrong')('/scenes',{name:'x',title:'y'})).status,403);
+  assert.equal((await raw('wrong')('/rooms',{name:'x',encounter:'y'})).status,403);
+  assert.equal((await raw('letmein','')('/scenes',{name:'x',title:'y'})).status,503);
+  const ok=await raw('letmein')('/scenes',{name:'Mira',title:'Mansion'});assert.equal(ok.status,201);
+  const room=await raw('letmein')('/rooms',{name:'Mira',encounter:'Fight'});assert.equal(room.status,201);
+  assert.equal((await raw(undefined)(`/scenes/${ok.code}/join`,{name:'Ash'})).status,201);
+  assert.equal((await raw(undefined)(`/rooms/${room.room.code}/join`,{name:'Ash'})).status,201);
+});
+
+test('the DM can remove someone from a scene and they lose access',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const s=await scene(call);const [ash,bryn]=s.joined;
+  assert.equal((await call('POST',`/scenes/${s.code}/kick`,{memberId:bryn.memberId},ash.token)).status,403);
+  const k=await call('POST',`/scenes/${s.code}/kick`,{memberId:bryn.memberId},s.dm.token);assert.equal(k.status,200);
+  assert.equal((await call('GET',`/scenes/${s.code}?after=-1`,undefined,bryn.token)).status,401);
+  assert.equal((await call('GET',`/scenes/${s.code}?after=-1`,undefined,ash.token)).status,200);
+  assert.equal((await call('POST',`/scenes/${s.code}/kick`,{memberId:bryn.memberId},s.dm.token)).status,404);
+  const dmView=await call('GET',`/scenes/${s.code}?after=-1`,undefined,s.dm.token);
+  assert.deepEqual(dmView.members.map(m=>m.name),['Ash','Cole']);
 });
