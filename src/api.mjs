@@ -1,5 +1,6 @@
 import { makeRoom, makeMember, authenticate, publicRoom, apply, log, fail, expireIfDue } from './engine.mjs';
 import { createHash } from 'node:crypto';
+import { handleScenes } from './scenes.mjs';
 const json = (body,status = 200) => new Response(JSON.stringify(body),{ status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'} });
 async function input(request) {
   if (!request.headers.get('content-type')?.startsWith('application/json')) fail('Send JSON.',415);
@@ -33,6 +34,7 @@ export async function handle(request,db) {
     if (!['GET','POST'].includes(request.method)) fail('Method not allowed.',405);
     if (request.method === 'POST') { const origin = request.headers.get('origin'); if (origin && origin !== new URL(request.url).origin) fail('This action must come from the Kinship Combat website.',403); }
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    if (path === '/scenes' || path.startsWith('/scenes/')) return await handleScenes(request,db,path,{ json,input,rate,ip });
     if (request.method === 'POST' && path === '/rooms') {
       await rate(db,'create:'+ip,8);
       await db.prepare('DELETE FROM rooms WHERE updated_at < ?').bind(new Date(Date.now()-STALE_DAYS*86400000).toISOString()).run();
