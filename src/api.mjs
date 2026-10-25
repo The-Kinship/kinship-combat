@@ -1,4 +1,4 @@
-import { makeRoom, makeMember, authenticate, publicRoom, apply, log, fail } from './engine.mjs';
+import { makeRoom, makeMember, authenticate, publicRoom, apply, log, fail, expireIfDue } from './engine.mjs';
 import { createHash } from 'node:crypto';
 const json = (body,status = 200) => new Response(JSON.stringify(body),{ status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'} });
 async function input(request) {
@@ -18,6 +18,13 @@ async function update(db,room,revision) {
   const result = await db.prepare('UPDATE rooms SET state = ?, revision = ?, updated_at = ? WHERE code = ? AND revision = ?').bind(JSON.stringify(room),room.revision,new Date().toISOString(),room.code,revision).run();
   return result.meta.changes === 1;
 }
+// A timed encounter ends itself once its clock runs out; save that the first time anyone looks.
+async function settle(db,code,room) {
+  const revision = room.revision;
+  if (!expireIfDue(room)) return room;
+  return (await update(db,room,revision)) ? room : find(db,code);
+}
+const STALE_DAYS = 7;
 export async function handle(request,db) {
   try {
     if (!db) fail('The encounter database is not ready. Please try again shortly.',503);
@@ -28,31 +35,37 @@ export async function handle(request,db) {
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
     if (request.method === 'POST' && path === '/rooms') {
       await rate(db,'create:'+ip,8);
+      await db.prepare('DELETE FROM rooms WHERE updated_at < ?').bind(new Date(Date.now()-STALE_DAYS*86400000).toISOString()).run();
       const count = await db.prepare('SELECT count(*) AS total FROM rooms').first(); if (count.total >= 500) fail('The site has reached its encounter capacity.',503);
       const data = await input(request), result = makeRoom(data.name,data.encounter);
       await db.prepare('INSERT INTO rooms (code,revision,state,updated_at) VALUES (?,?,?,?)').bind(result.room.code,0,JSON.stringify(result.room),result.room.updatedAt).run();
       await db.prepare('DELETE FROM rate_limits WHERE expires < ?').bind(Date.now()).run();
-      return json({token:result.token,memberId:result.memberId,room:publicRoom(result.room)},201);
+      return json({token:result.token,memberId:result.memberId,room:publicRoom(result.room,result.room.members[0])},201);
     }
-    const match = path.match(/^\/rooms\/([A-Fa-f0-9]{18})(?:\/(join|actions))?$/); if (!match) fail('Endpoint not found.',404);
-    const code = match[1].toUpperCase(), route = match[2]; let room = await find(db,code);
+    const match = path.match(/^\/rooms\/([A-Fa-f0-9]{18})(?:\/(join|actions|close))?$/); if (!match) fail('Endpoint not found.',404);
+    const code = match[1].toUpperCase(), route = match[2]; let room = await settle(db,code,await find(db,code));
     if (route === 'join' && request.method === 'POST') {
-      await rate(db,'join:'+ip,20); const data = await input(request), { member,token } = makeMember(data.name,'player');
+      if (room.phase === 'ended') fail('This encounter is over.'); await rate(db,'join:'+ip,20); const data = await input(request), { member,token } = makeMember(data.name,'player');
       for (let attempt = 0; attempt < 4; attempt++) {
         if (room.members.length >= 40) fail('This room is full.');
         const revision = room.revision; room.members.push(member); room.revision++; log(room,member.name+' joined the room.');
-        if (await update(db,room,revision)) return json({token,memberId:member.id,room:publicRoom(room)},201);
-        room = await find(db,code);
+        if (await update(db,room,revision)) return json({token,memberId:member.id,room:publicRoom(room,member)},201);
+        room = await settle(db,code,await find(db,code));
       }
       fail('The room is busy. Please try joining again.',409);
     }
     const token = (request.headers.get('authorization') || '').replace(/^Bearer /,''); const member = authenticate(room,token);
-    if (!route && request.method === 'GET') return json({memberId:member.id,room:publicRoom(room)});
+    if (route === 'close' && request.method === 'POST') {
+      if (member.role !== 'dm') fail('Only the DM can close the encounter.',403);
+      await db.prepare('DELETE FROM rooms WHERE code = ?').bind(code).run();
+      return json({closed:true});
+    }
+    if (!route && request.method === 'GET') return json({memberId:member.id,room:publicRoom(room,member)});
     if (route === 'actions' && request.method === 'POST') {
       await rate(db,'action:'+member.id,120); const command = await input(request);
-      room = await find(db,code); const revision = room.revision; const changed = apply(room,authenticate(room,token),command);
+      room = await settle(db,code,await find(db,code)); const actor = authenticate(room,token); const revision = room.revision; const changed = apply(room,actor,command);
       if (changed && !await update(db,room,revision)) fail('The encounter changed. Review the latest state and try again.',409);
-      return json({memberId:member.id,room:publicRoom(room)});
+      return json({memberId:member.id,room:publicRoom(room,actor)});
     }
     fail('Endpoint not found.',404);
   } catch (error) { if (!error.status) console.error('Encounter request failed:',error.name); return json({error:error.status ? error.message : 'The encounter could not be saved. Please retry.'},error.status || 500); }
