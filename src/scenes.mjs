@@ -36,19 +36,20 @@ function view(scene, member) {
 }
 const eventsFor = (scene, member, after) => scene.events.filter(e => e.id > after && (!e.to || e.to.includes(member.id))).map(({ id, at, text, ooc }) => ({ id, at, text, ooc }));
 
-export async function handleScenes(request, db, path, { json, input, rate, ip }) {
+export async function handleScenes(request, db, path, { json, input, rate, ip, checkCreate }) {
   if (request.method === 'POST' && path === '/scenes') {
     await rate(db, 'scene-create:' + ip, 8);
+    const data = await input(request); checkCreate(data.createPassword);
     await db.prepare('DELETE FROM scenes WHERE updated_at < ?').bind(new Date(Date.now() - STALE_DAYS * 86400000).toISOString()).run();
     const count = await db.prepare('SELECT count(*) AS total FROM scenes').first();
     if (count.total >= MAX_SCENES) fail('The site has reached its scene capacity.', 503);
-    const data = await input(request), { member, token } = makeMember(data.name, 'dm');
+    const { member, token } = makeMember(data.name, 'dm');
     const now = new Date().toISOString();
     const scene = { code: randomBytes(9).toString('hex').toUpperCase(), title: str(data.title || 'RP scene', 'Scene name', 80), revision: 0, members: [member], events: [], nextId: 1, createdAt: now, updatedAt: now };
     await db.prepare('INSERT INTO scenes (code, revision, state, updated_at) VALUES (?, ?, ?, ?)').bind(scene.code, 0, JSON.stringify(scene), now).run();
     return json({ token, ...view(scene, member) }, 201);
   }
-  const match = path.match(/^\/scenes\/([A-Fa-f0-9]{18})(?:\/(join|send|leave|close))?$/);
+  const match = path.match(/^\/scenes\/([A-Fa-f0-9]{18})(?:\/(join|send|leave|close|kick))?$/);
   if (!match) fail('Endpoint not found.', 404);
   const code = match[1].toUpperCase(), route = match[2];
 
@@ -90,6 +91,16 @@ export async function handleScenes(request, db, path, { json, input, rate, ip })
     if (me.role === 'dm') fail('The DM closes the scene instead of leaving it.');
     await mutate(db, code, s => { s.members = s.members.filter(m => m.id !== me.id); });
     return json({ left: true });
+  }
+  if (route === 'kick' && request.method === 'POST') {
+    if (me.role !== 'dm') fail('Only the DM can remove people.', 403);
+    const data = await input(request), id = str(data.memberId, 'Person', 60);
+    const { result } = await mutate(db, code, s => {
+      const target = s.members.find(m => m.id === id && m.role !== 'dm');
+      if (!target) fail('That person is not in this scene.', 404);
+      s.members = s.members.filter(m => m.id !== id); return target.name;
+    });
+    return json({ removed: true, name: result });
   }
   if (route === 'close' && request.method === 'POST') {
     if (me.role !== 'dm') fail('Only the DM can close the scene.', 403);

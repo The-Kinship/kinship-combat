@@ -1,5 +1,5 @@
 import { makeRoom, makeMember, authenticate, publicRoom, apply, log, fail, expireIfDue } from './engine.mjs';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { handleScenes } from './scenes.mjs';
 const json = (body,status = 200) => new Response(JSON.stringify(body),{ status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'} });
 async function input(request) {
@@ -26,7 +26,13 @@ async function settle(db,code,room) {
   return (await update(db,room,revision)) ? room : find(db,code);
 }
 const STALE_DAYS = 7;
-export async function handle(request,db) {
+// Creating an encounter or scene needs the creation password (a Cloudflare secret). Joining only needs a code.
+function checkCreate(supplied,expected) {
+  if (!expected) fail('Creating is switched off until the creation password is set in Cloudflare.',503);
+  const a = createHash('sha256').update(String(supplied ?? '')).digest(), b = createHash('sha256').update(String(expected)).digest();
+  if (!timingSafeEqual(a,b)) fail('That creation password is not right. Ask your DM or the FC leader.',403);
+}
+export async function handle(request,db,createPassword) {
   try {
     if (!db) fail('The encounter database is not ready. Please try again shortly.',503);
     const path = new URL(request.url).pathname.replace(/^\/api/,'');
@@ -34,12 +40,13 @@ export async function handle(request,db) {
     if (!['GET','POST'].includes(request.method)) fail('Method not allowed.',405);
     if (request.method === 'POST') { const origin = request.headers.get('origin'); if (origin && origin !== new URL(request.url).origin) fail('This action must come from the Kinship Combat website.',403); }
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-    if (path === '/scenes' || path.startsWith('/scenes/')) return await handleScenes(request,db,path,{ json,input,rate,ip });
+    if (path === '/scenes' || path.startsWith('/scenes/')) return await handleScenes(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (request.method === 'POST' && path === '/rooms') {
       await rate(db,'create:'+ip,8);
+      const data = await input(request); checkCreate(data.createPassword,createPassword);
       await db.prepare('DELETE FROM rooms WHERE updated_at < ?').bind(new Date(Date.now()-STALE_DAYS*86400000).toISOString()).run();
       const count = await db.prepare('SELECT count(*) AS total FROM rooms').first(); if (count.total >= 500) fail('The site has reached its encounter capacity.',503);
-      const data = await input(request), result = makeRoom(data.name,data.encounter);
+      const result = makeRoom(data.name,data.encounter);
       await db.prepare('INSERT INTO rooms (code,revision,state,updated_at) VALUES (?,?,?,?)').bind(result.room.code,0,JSON.stringify(result.room),result.room.updatedAt).run();
       await db.prepare('DELETE FROM rate_limits WHERE expires < ?').bind(Date.now()).run();
       return json({token:result.token,memberId:result.memberId,room:publicRoom(result.room,result.room.members[0])},201);
