@@ -6,6 +6,7 @@ import { handleStashes } from './stashes.mjs';
 import { handleSigns } from './signs.mjs';
 import { handleBank } from './bank.mjs';
 import { handleStatuses } from './statuses.mjs';
+import { handleQuests } from './quests.mjs';
 const json = (body,status = 200) => new Response(JSON.stringify(body),{ status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'} });
 async function input(request) {
   if (!request.headers.get('content-type')?.startsWith('application/json')) fail('Send JSON.',415);
@@ -56,6 +57,7 @@ export async function handle(request,db,createPassword,memberPassword,bankPasswo
     if (request.method === 'POST') { const origin = request.headers.get('origin'); if (origin && origin !== new URL(request.url).origin) fail('This action must come from the Kinship Combat website.',403); }
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
     if (path === '/statuses' || path.startsWith('/statuses/')) return await handleStatuses(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
+    if (path === '/quests' || path.startsWith('/quests/')) return await handleQuests(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/bank' || path.startsWith('/bank/')) return await handleBank(request,db,path,{ json,input,rate,ip,checkBank:supplied => checkBank(supplied,bankPassword) });
     if (path === '/signs' || path.startsWith('/signs/')) return await handleSigns(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/stashes' || path.startsWith('/stashes/')) return await handleStashes(request,db,path,{ json,input,rate,ip });

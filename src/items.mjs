@@ -18,7 +18,7 @@ export function str(value, name, max, required = true) {
   if (typeof value !== 'string' || value.length > max || (required && !value.trim())) fail(`${name} is required and must be at most ${max} characters.`);
   return value.trim();
 }
-function itemFields(data) {
+export function itemFields(data) {
   const name = str(data.name, 'Item name', 40), description = str(data.description, 'Description', 300, false), flavor = str(data.flavor, 'Flavor text', 150, false);
   const useText = str(data.useText, 'What happens when used', 400, false);
   let useLabel = str(data.useLabel, 'Use button label', 20, false);
@@ -159,6 +159,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await cleanOrphans(db);
       await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM statuses WHERE member_id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM quest_progress WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
       return json({ removed: true });
     }
