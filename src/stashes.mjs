@@ -20,7 +20,7 @@ async function open(db, id, me) {
   return r;
 }
 async function contents(db, id, me) {
-  const { results } = await db.prepare(ITEM_SELECT + ' WHERE i.owner_id = ? ORDER BY i.created_at, i.id').bind('s' + id).all();
+  const { results } = await db.prepare(ITEM_SELECT + ' WHERE i.owner_id = ? ORDER BY i.created_at, i.rowid').bind('s' + id).all();
   return results.map(r => view(r, me.id));
 }
 async function answer(json, db, id, me, status = 200) {
