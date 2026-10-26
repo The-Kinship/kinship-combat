@@ -2,7 +2,7 @@
 // Stashes: a named spot in the world that holds items. Everyone can see public ones; private ones are for the owner only.
 // Position rules (not in an instance, standing close enough) are checked by the plugin. The server keeps the data and the item rules.
 import { fail } from './engine.mjs';
-import { who, rand, str, view, inventory, CAP } from './items.mjs';
+import { who, rand, str, view, inventory, CAP, ITEM_SELECT } from './items.mjs';
 
 const STASH_CAP = 20, MAX_PER_MEMBER = 3, MAX_STASHES = 300;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
@@ -20,7 +20,7 @@ async function open(db, id, me) {
   return r;
 }
 async function contents(db, id, me) {
-  const { results } = await db.prepare('SELECT * FROM items WHERE owner_id = ? ORDER BY created_at, id').bind('s' + id).all();
+  const { results } = await db.prepare(ITEM_SELECT + ' WHERE i.owner_id = ? ORDER BY i.created_at, i.id').bind('s' + id).all();
   return results.map(r => view(r, me.id));
 }
 async function answer(json, db, id, me, status = 200) {
