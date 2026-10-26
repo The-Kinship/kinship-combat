@@ -5,13 +5,14 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { fail } from './engine.mjs';
 
 const CAPACITY = 10, MAX_MEMBERS = 300, MAX_ITEMS = 3000;
+export const CAP = CAPACITY;
 const sha = s => createHash('sha256').update(s).digest('hex');
-const rand = n => randomBytes(n).toString('hex');
-const nameKey = n => n.toLowerCase().replace(/\s+/g, ' ').trim();
+export const rand = n => randomBytes(n).toString('hex');
+export const nameKey = n => n.toLowerCase().replace(/\s+/g, ' ').trim();
 const recoveryKey = c => String(c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
 
-function str(value, name, max, required = true) {
+export function str(value, name, max, required = true) {
   if (value === undefined || value === null) value = '';
   if (typeof value !== 'string' || value.length > max || (required && !value.trim())) fail(`${name} is required and must be at most ${max} characters.`);
   return value.trim();
@@ -26,20 +27,20 @@ function itemFields(data) {
   if (!ICON.test(icon)) fail('Choose an icon for the item.');
   return { name, icon, description, flavor, useLabel, useText, consumable: data.consumable === true && useText ? 1 : 0 };
 }
-const view = (row, meId) => {
+export const view = (row, meId) => {
   const mine = row.creator_id === meId && row.owner_id === meId;
   const v = { id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine };
   if (mine) v.useText = row.use_text;
   return v;
 };
-async function who(db, request) {
+export async function who(db, request) {
   const token = (request.headers.get('authorization') || '').replace(/^Bearer /, '');
   if (!token) fail('Sign in on the Items tab first.', 401);
   const row = await db.prepare('SELECT id, name FROM members WHERE token_hash = ?').bind(sha(token)).first();
   if (!row) fail('Your sign-in is no longer valid. Use your recovery code on the Items tab.', 401);
   return row;
 }
-async function inventory(db, meId) {
+export async function inventory(db, meId) {
   const { results } = await db.prepare('SELECT * FROM items WHERE owner_id = ? ORDER BY created_at, id').bind(meId).all();
   return results.map(r => view(r, meId));
 }
@@ -73,9 +74,11 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     await rate(db, 'items-admin:' + ip, 30);
     const data = await input(request); checkCreate(data.adminPassword);
     if (path === '/items/admin/list') {
-      const { results } = await db.prepare('SELECT i.id, i.name, i.icon, i.description, i.creator_id, o.name AS owner, c.name AS creator FROM items i LEFT JOIN members o ON o.id = i.owner_id LEFT JOIN members c ON c.id = i.creator_id ORDER BY i.created_at DESC LIMIT 300').all();
+      const { results } = await db.prepare("SELECT i.id, i.name, i.icon, i.description, i.creator_id, COALESCE(o.name, 'Stash: ' || st.name) AS owner, c.name AS creator FROM items i LEFT JOIN members o ON o.id = i.owner_id LEFT JOIN stashes st ON 's' || st.id = i.owner_id LEFT JOIN members c ON c.id = i.creator_id ORDER BY i.created_at DESC LIMIT 300").all();
       const members = (await db.prepare('SELECT name FROM members ORDER BY name_key').all()).results.map(m => m.name);
-      return json({ items: results.map(r => ({ id: r.id, name: r.name, icon: r.icon, description: r.description, owner: r.owner || '(removed)', creator: r.creator_id === 'dm' ? '(DM gift)' : (r.creator || '(removed)') })), members });
+      const stashes = (await db.prepare("SELECT s.id, s.name, s.zone, s.is_private, m.name AS owner, (SELECT count(*) FROM items WHERE owner_id = 's' || s.id) AS count FROM stashes s LEFT JOIN members m ON m.id = s.owner_id ORDER BY s.created_at DESC LIMIT 300").all()).results
+        .map(r => ({ id: r.id, name: r.name, zone: r.zone, owner: r.owner || '(removed)', isPrivate: !!r.is_private, count: r.count }));
+      return json({ stashes, items: results.map(r => ({ id: r.id, name: r.name, icon: r.icon, description: r.description, owner: r.owner || '(removed)', creator: r.creator_id === 'dm' ? '(DM gift)' : (r.creator || '(removed)') })), members });
     }
     if (path === '/items/admin/grant') {
       const f = itemFields(data);
@@ -87,6 +90,13 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       if (r.meta.changes !== 1) fail(`${to.name}'s inventory is full.`, 409);
       return json({ granted: true, to: to.name }, 201);
     }
+    if (path === '/items/admin/delete-stash') {
+      const sid = str(data.stashId, 'Stash', 20);
+      await db.prepare("DELETE FROM items WHERE owner_id = 's' || ?").bind(sid).run();
+      const r = await db.prepare('DELETE FROM stashes WHERE id = ?').bind(sid).run();
+      if (r.meta.changes !== 1) fail('That stash no longer exists.', 404);
+      return json({ deleted: true });
+    }
     if (path === '/items/admin/delete') {
       const r = await db.prepare('DELETE FROM items WHERE id = ?').bind(str(data.itemId, 'Item', 20)).run();
       if (r.meta.changes !== 1) fail('That item no longer exists.', 404);
@@ -95,6 +105,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (path === '/items/admin/remove-member') {
       const row = await db.prepare('SELECT id FROM members WHERE name_key = ?').bind(nameKey(str(data.name, 'Name', 40))).first();
       if (!row) fail('No member has that name.', 404);
+      await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
+      await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
       await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
       return json({ removed: true });
