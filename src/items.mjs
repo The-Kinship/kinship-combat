@@ -107,6 +107,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       if (!row) fail('No member has that name.', 404);
       await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
       await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM signs WHERE owner_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
       await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
       return json({ removed: true });
