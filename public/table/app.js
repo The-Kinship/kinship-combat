@@ -47,7 +47,7 @@ function renderSetup(editable) {
   ['encName','location','notes','orderMode','kind','minutes','sample','add'].forEach(id => $(id).disabled = !editable);
   $('sample').classList.toggle('hidden', !isDM()); $('add').classList.toggle('hidden', !isDM());
   [0,1,2].forEach(i => { $('step'+i).classList.toggle('hidden', step !== i); $('s'+i).classList.toggle('active', step === i); });
-  $('rows').innerHTML = room.people.map(p => `<div class="rosterRow"><div><strong>${esc(p.name)}</strong><div class="sub">${esc(p.details)}</div></div><span class="tag">${p.type}</span><span>${p.hp} / ${p.max} HP<div class="sub">Order ${p.number}${p.loot ? ' · Loot: '+esc(p.loot) : ''}</div></span><div>${p.type === 'NPC' ? '<span class="muted">DM controlled</span>' : `<select aria-label="Owner of ${esc(p.name)}" data-assign="${p.id}" ${!editable ? 'disabled' : ''}>${ownerOptions(p.ownerId)}</select>`}</div><div>${isDM() ? `<button class="small" data-edit="${p.id}" ${!editable ? 'disabled' : ''}>Edit</button> <button class="small quiet" data-remove="${p.id}" ${!editable ? 'disabled' : ''} aria-label="Remove ${esc(p.name)}">×</button>` : ''}</div></div>`).join('') || '<p class="muted" style="padding:22px 0">The cast is waiting to be written. Add your first character.</p>';
+  $('rows').innerHTML = room.people.map(p => `<div class="rosterRow"><div><strong>${esc(p.name)}</strong><div class="sub">${esc(p.details)}</div></div><span class="tag">${p.type}</span><span>${p.hp} / ${p.max} HP<div class="sub">Order ${p.number}${p.loot ? ' · Loot: '+esc(p.loot) : ''}${p.mods?.length ? ' · Mods: '+esc(modsToText(p.mods)) : ''}</div></span><div>${p.type === 'NPC' ? '<span class="muted">DM controlled</span>' : `<select aria-label="Owner of ${esc(p.name)}" data-assign="${p.id}" ${!editable ? 'disabled' : ''}>${ownerOptions(p.ownerId)}</select>`}</div><div>${isDM() ? `<button class="small" data-edit="${p.id}" ${!editable ? 'disabled' : ''}>Edit</button> <button class="small quiet" data-remove="${p.id}" ${!editable ? 'disabled' : ''} aria-label="Remove ${esc(p.name)}">×</button>` : ''}</div></div>`).join('') || '<p class="muted" style="padding:22px 0">The cast is waiting to be written. Add your first character.</p>';
   const ordered = [...room.people]; if ($('orderMode').value === 'manual') ordered.sort((a,b) => a.number-b.number);
   $('orderRows').innerHTML = ordered.map(p => `<div class="reviewItem"><strong>${esc(p.name)}</strong><p class="details">${$('orderMode').value === 'manual' ? 'Order '+p.number : 'Assigned at start'} · ${p.type}</p></div>`).join('');
   $('stepLabel').textContent = `Step ${step+1} of 3`; $('back').disabled = step === 0 || pending;
@@ -62,7 +62,7 @@ function renderCombat(unlocked, editable) {
   for (const [type, id] of [['Player','players'],['NPC','npcs']]) {
     $(id).innerHTML = room.order.map(id => room.people.find(x => x.id === id)).filter(x => x.type === type).map(x => {
       const owner = room.members.find(m => m.id === x.ownerId);
-      return `<article class="card ${type === 'NPC' ? 'npc' : ''} ${x.id === p.id ? 'current' : ''}"><div class="cardHead"><strong>${esc(x.name)}</strong><span class="muted">${room.order.indexOf(x.id)+1}</span></div><div class="hp"><i style="width:${x.hp/x.max*100}%"></i></div><div class="cardHead"><span style="color:${type === 'NPC' ? 'var(--red)' : 'var(--green)'}">${x.hp} <span class="muted">/ ${x.max} HP</span></span><span class="details">${x.hp === 0 ? 'Downed' : ''}</span></div><p class="details">${esc(x.details)}</p><p class="details">${type === 'NPC' ? 'DM controlled' : 'Player · '+esc(owner?.name || 'Unassigned')}</p></article>`;
+      return `<article class="card ${type === 'NPC' ? 'npc' : ''} ${x.id === p.id ? 'current' : ''}"><div class="cardHead"><strong>${esc(x.name)}</strong><span class="muted">${room.order.indexOf(x.id)+1}</span></div><div class="hp"><i style="width:${x.hp/x.max*100}%"></i></div><div class="cardHead"><span style="color:${type === 'NPC' ? 'var(--red)' : 'var(--green)'}">${x.hp} <span class="muted">/ ${x.max} HP</span></span><span class="details">${x.hp === 0 ? 'Downed' : ''}</span></div><p class="details">${esc(x.details)}</p>${x.mods?.length ? `<p class="details">Mods: ${esc(modsToText(x.mods))}</p>` : ''}<p class="details">${type === 'NPC' ? 'DM controlled' : 'Player · '+esc(owner?.name || 'Unassigned')}</p></article>`;
     }).join('') || '<p class="muted">No characters</p>';
   }
   const old = $('target').value;
@@ -73,10 +73,10 @@ function renderCombat(unlocked, editable) {
   $('endTurn').disabled = !unlocked || !(isDM() || canAct()); $('undo').disabled = !editable || !room.undoAvailable;
   const owner = room.members.find(m => m.id === p.ownerId);
   $('permission').textContent = !live ? 'Reconnecting · actions paused.' : p.hp === 0 ? 'Current character is downed. Advance to continue.' : canAct() ? (p.type === 'NPC' ? 'DM · You control this NPC.' : 'Your character’s turn. Choose your action.') : p.type === 'NPC' ? 'NPC turn · Waiting for the DM.' : `Waiting for ${owner?.name || 'the assigned player'} to act.`;
-  $('dieResult').textContent = room.lastRoll?.raw ?? '—';
+  $('dieResult').textContent = room.lastRoll?.total ?? room.lastRoll?.raw ?? '—';
   $('result').textContent = room.lastRoll ? (room.log.find(l => l.message.includes('HP (d'))?.message || 'Last roll applied to shared HP.') : 'Rolls are generated by the server and shown to everyone.';
   // A stable roll description also survives log changes and undo.
-  if (room.lastRoll) { const r = room.lastRoll, source = room.people.find(x => x.id === r.actorId), target = room.people.find(x => x.id === r.targetId); $('result').textContent = `${source?.name} → ${target?.name}: ${r.kind === 'heal' ? 'heals' : 'attacks'} for ${r.applied} HP. d${r.sides}: ${r.raw}. ${r.before} → ${r.after} HP.`; }
+  if (room.lastRoll) { const r = room.lastRoll, source = room.people.find(x => x.id === r.actorId), target = room.people.find(x => x.id === r.targetId); $('result').textContent = `${source?.name} → ${target?.name}: ${r.kind === 'heal' ? 'heals' : 'attacks'} for ${r.applied} HP. d${r.sides}: ${r.raw}${r.mods?.length ? `, ${modsToText(r.mods)} = ${r.total}` : ''}. ${r.before} → ${r.after} HP.`; }
   $('log').innerHTML = room.log.map(l => `<div class="event"><time>${esc(new Date(l.at).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }))}</time><span>${esc(l.message)}</span></div>`).join('');
   let next; for (let n = 1; n <= room.order.length; n++) { const x = room.people.find(x => x.id === room.order[(room.index+n)%room.order.length]); if (x.hp > 0) { next = x; break; } }
   $('upNext').textContent = next ? 'Up next · '+next.name : 'All characters are downed. The DM can undo or edit setup.';
@@ -95,20 +95,34 @@ $('next').onclick = async () => {
   if (!await saveSettings()) return;
   if (step < 2) { step++; render(); } else await command('start');
 };
+const modsToText = list => (list || []).map(m => `${m.value > 0 ? '+' : ''}${m.value} ${m.label}`).join(', ');
+// "+1 Sword, -2 Sick" -> [{label, value}]. Returns null if something can't be read.
+function parseMods(text) {
+  const out = [];
+  for (const part of text.split(',')) {
+    const t = part.trim(); if (!t) continue;
+    const m = t.match(/^([+-]?\d{1,2})\s*(.*)$/); if (!m) return null;
+    const label = m[2].trim() || 'Modifier', value = Number(m[1]);
+    if (label.length > 30) return null;
+    if (value !== 0) out.push({ label, value });
+  }
+  return out.length <= 6 ? out : null;
+}
 function editPerson(person = null) {
   if (!isDM()) return; editingId = person?.id || null; $('personTitle').textContent = person ? 'Edit participant' : 'Add participant';
   $('personName').value = person?.name || ''; $('personType').value = person?.type || 'Player'; $('personOwner').innerHTML = ownerOptions(person?.ownerId);
   $('personHp').value = person?.hp ?? 40; $('personMax').value = person?.max ?? 40; $('personNumber').value = person?.number ?? room.people.length+1;
-  $('personDetails').value = person?.details || ''; $('personLoot').value = person?.loot || ''; $('personError').textContent = ''; $('personOwner').disabled = $('personType').value === 'NPC'; $('personDialog').showModal();
+  $('personDetails').value = person?.details || ''; $('personLoot').value = person?.loot || ''; $('personMods').value = modsToText(person?.mods); $('personError').textContent = ''; $('personOwner').disabled = $('personType').value === 'NPC'; $('personDialog').showModal();
 }
 $('add').onclick = () => editPerson(); $('closePerson').onclick = () => $('personDialog').close();
 $('personType').onchange = () => { $('personOwner').disabled = $('personType').value === 'NPC'; };
 $('personForm').onsubmit = async event => {
   event.preventDefault(); $('savePerson').disabled = true;
-  const hp = Number($('personHp').value), max = Number($('personMax').value);
+  const hp = Number($('personHp').value), max = Number($('personMax').value), mods = parseMods($('personMods').value);
+  if (!mods) { $('personError').textContent = 'Modifiers look like +1 Sword, -2 Sick (up to 6, each name up to 30 characters).'; $('savePerson').disabled = false; return; }
   if (hp > max) { $('personError').textContent = 'HP cannot exceed maximum HP.'; $('savePerson').disabled = false; return; }
   const ok = await command('participant', { ...(editingId ? { id: editingId } : {}), name: $('personName').value.trim(), type: $('personType').value,
-    ownerId: $('personType').value === 'NPC' ? null : $('personOwner').value || null, hp, max, number: Number($('personNumber').value), details: $('personDetails').value, loot: $('personLoot').value.trim() });
+    ownerId: $('personType').value === 'NPC' ? null : $('personOwner').value || null, hp, max, number: Number($('personNumber').value), details: $('personDetails').value, loot: $('personLoot').value.trim(), mods });
   if (ok) $('personDialog').close(); else $('personError').textContent = 'Participant was not saved. Check the notification and try again.';
   $('savePerson').disabled = false;
 };
