@@ -160,6 +160,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM statuses WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM quest_progress WHERE member_id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM quest_claims WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
       return json({ removed: true });
     }

@@ -5,16 +5,30 @@ import { fail } from './engine.mjs';
 import { who, rand, str, nameKey, itemFields, inventory, CAP } from './items.mjs';
 
 const MAX_QUESTS = 60, MAX_STEPS = 12, MAX_ACTIVE = 15;
-const TYPES = ['talk', 'give', 'receive'];
+const TYPES = ['talk', 'give', 'receive', 'look', 'listen', 'search'];
+const SPOT = ['look', 'listen', 'search'];
+const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
+function place(d) {
+  if (!d || typeof d !== 'object') fail('A step that happens at a spot needs a location. Stand there and use "Use this location".');
+  if (!Number.isInteger(d.territory) || d.territory < 0 || d.territory > 65535) fail('That zone is not valid.');
+  if (!Number.isInteger(d.map) || d.map < 0 || d.map > 1000000) fail('That map is not valid.');
+  return { zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
+}
 
 function steps(list) {
   if (!Array.isArray(list) || list.length === 0 || list.length > MAX_STEPS) fail(`A quest needs 1 to ${MAX_STEPS} steps.`);
   return list.map((s, i) => {
     const at = `Step ${i + 1}`;
-    if (!s || typeof s !== 'object' || !TYPES.includes(s.type)) fail(`${at} needs a type: talk, give or receive.`);
-    const out = { type: s.type, npc: str(s.npc, `${at} character name`, 40), text: str(s.text, `${at} dialogue`, 600), hint: str(s.hint, `${at} hint`, 150, false) };
+    if (!s || typeof s !== 'object' || !TYPES.includes(s.type)) fail(`${at} needs a type.`);
+    const spot = SPOT.includes(s.type);
+    const out = { type: s.type, npc: spot ? '' : str(s.npc, `${at} character name`, 40), text: str(s.text, `${at} text`, 600), hint: str(s.hint, `${at} hint`, 150, false) };
+    if (spot) out.place = place(s.place);
     if (s.type === 'give') out.item = str(s.item, `${at} item to hand over`, 40);
-    if (s.type === 'receive') { if (!s.gift || typeof s.gift !== 'object') fail(`${at} needs an item to give.`); out.gift = itemFields(s.gift); }
+    if (s.type === 'receive' && (!s.gift || typeof s.gift !== 'object')) fail(`${at} needs an item to give.`);
+    if ((s.type === 'receive' || s.type === 'search') && s.gift && typeof s.gift === 'object') {
+      out.gift = itemFields(s.gift);
+      out.once = s.once === true;
+    }
     return out;
   });
 }
@@ -22,12 +36,42 @@ const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps F
 function mineView(r) {
   const list = JSON.parse(r.steps), cur = r.done ? null : list[r.step];
   return { questId: r.quest_id, title: r.title, intro: r.intro, step: r.step, total: list.length, done: !!r.done,
-    current: cur ? { type: cur.type, npc: cur.npc, item: cur.item || '', hint: cur.hint } : null };
+    current: cur ? { type: cur.type, npc: cur.npc, item: cur.item || '', hint: cur.hint, place: cur.place || null } : null };
 }
 async function insertGift(db, ownerId, f) {
   const r = await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?")
     .bind(rand(8), ownerId, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), ownerId, CAP).run();
   return r.meta.changes === 1;
+}
+
+// Moves one player past one step: checks what the step needs, hands over or takes items, and keeps first-come finds to one winner.
+async function runStep(db, me, r, list, st) {
+  const stop = text => ({ quest: r.title, ok: false, text, finished: false, gained: [] });
+  const now = new Date().toISOString(), last = r.step + 1 >= list.length;
+  const claim = () => db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ?').bind(last ? 1 : 0, now, me.id, r.quest_id, r.step).run();
+  const revert = () => db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, me.id, r.quest_id).run();
+  let held = null, gained = [];
+  if (st.type === 'give') {
+    held = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND creator_id = 'dm' AND lower(name) = ? LIMIT 1").bind(me.id, st.item.toLowerCase()).first();
+    if (!held) return stop(`${st.npc} is waiting for something. You don't have it.`);
+  }
+  let won = false;
+  if (st.once && st.gift) {
+    const w = await db.prepare('INSERT INTO quest_claims (quest_id, step, member_id, created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING').bind(r.quest_id, r.step, me.id, now).run();
+    if (w.meta.changes !== 1) return stop('Someone else got here first. There is nothing left to find.');
+    won = true;
+  }
+  const undo = async () => { await revert(); if (won) await db.prepare('DELETE FROM quest_claims WHERE quest_id = ? AND step = ? AND member_id = ?').bind(r.quest_id, r.step, me.id).run(); };
+  if ((await claim()).meta.changes !== 1) { if (won) await db.prepare('DELETE FROM quest_claims WHERE quest_id = ? AND step = ? AND member_id = ?').bind(r.quest_id, r.step, me.id).run(); return null; }
+  if (held) {
+    const gone = await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(held.id, me.id).run();
+    if (gone.meta.changes !== 1) { await undo(); return stop('That item is no longer with you.'); }
+  }
+  if (st.gift) {
+    if (!(await insertGift(db, me.id, st.gift))) { await undo(); return stop('Your inventory is full. Make room, then try again.'); }
+    gained = [st.gift.name];
+  }
+  return { quest: r.title, ok: true, text: st.text, finished: last, gained };
 }
 
 export async function handleQuests(request, db, path, { json, input, rate, ip, checkCreate }) {
@@ -39,8 +83,10 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     if (path === '/quests/admin/list') {
       const { results } = await db.prepare('SELECT * FROM quests ORDER BY created_at, rowid').all();
       const prog = (await db.prepare('SELECT p.quest_id, p.step, p.done, m.name FROM quest_progress p JOIN members m ON m.id = p.member_id ORDER BY m.name_key').all()).results;
+      const claims = (await db.prepare('SELECT c.quest_id, c.step, m.name FROM quest_claims c LEFT JOIN members m ON m.id = c.member_id').all()).results;
       return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps),
-        players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: !!p.done })) })) });
+        players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: !!p.done })),
+        claims: claims.filter(c => c.quest_id === q.id).map(c => ({ step: c.step, name: c.name || '(removed)' })) })) });
     }
     if (path === '/quests/admin/save') {
       const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps);
@@ -60,9 +106,14 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     if (path === '/quests/admin/delete') {
       const id = str(d.questId, 'Quest', 20);
       await db.prepare('DELETE FROM quest_progress WHERE quest_id = ?').bind(id).run();
+      await db.prepare('DELETE FROM quest_claims WHERE quest_id = ?').bind(id).run();
       const r = await db.prepare('DELETE FROM quests WHERE id = ?').bind(id).run();
       if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
       return json({ deleted: true });
+    }
+    if (path === '/quests/admin/reset-claims') {
+      await db.prepare('DELETE FROM quest_claims WHERE quest_id = ?').bind(str(d.questId, 'Quest', 20)).run();
+      return json({ reset: true });
     }
     if (path === '/quests/admin/assign' || path === '/quests/admin/unassign') {
       const to = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(str(d.to, 'Member', 40))).first();
@@ -85,33 +136,25 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     return json({ quests: results.map(mineView) });
   }
 
-  if (post && path === '/quests/talk') {
+  if (post && (path === '/quests/talk' || path === '/quests/act')) {
     await rate(db, 'quest-talk:' + me.id, 60);
-    const d = await input(request), npc = nameKey(str(d.npc, 'Character', 60));
+    const d = await input(request), talking = path === '/quests/talk';
+    let npc = '', kind = '', territory = -1;
+    if (talking) npc = nameKey(str(d.npc, 'Character', 60));
+    else {
+      kind = d.type;
+      if (!SPOT.includes(kind)) fail('Choose look, listen or search.');
+      if (!Number.isInteger(d.territory)) fail('Your location is not known.');
+      territory = d.territory;
+    }
     const { results } = await db.prepare(SELECT_P.replace('ORDER BY', 'AND p.done = 0 ORDER BY')).bind(me.id).all();
     const out = [];
     for (const r of results) {
       const list = JSON.parse(r.steps), st = list[r.step];
-      if (!st || nameKey(st.npc) !== npc) continue;
-      const stop = text => out.push({ quest: r.title, ok: false, text, finished: false, gained: [] });
-      let gained = [];
-      if (st.type === 'give') {
-        const held = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND creator_id = 'dm' AND lower(name) = ? LIMIT 1").bind(me.id, st.item.toLowerCase()).first();
-        if (!held) { stop(`${st.npc} is waiting for something. You don't have it.`); continue; }
-        const claim = await db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ?').bind(r.step + 1 >= list.length ? 1 : 0, new Date().toISOString(), me.id, r.quest_id, r.step).run();
-        if (claim.meta.changes !== 1) continue;
-        const gone = await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(held.id, me.id).run();
-        if (gone.meta.changes !== 1) { await db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, me.id, r.quest_id).run(); stop('That item is no longer with you.'); continue; }
-      } else if (st.type === 'receive') {
-        const claim = await db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ?').bind(r.step + 1 >= list.length ? 1 : 0, new Date().toISOString(), me.id, r.quest_id, r.step).run();
-        if (claim.meta.changes !== 1) continue;
-        if (!(await insertGift(db, me.id, st.gift))) { await db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, me.id, r.quest_id).run(); stop('Your inventory is full. Make room, then talk to them again.'); continue; }
-        gained = [st.gift.name];
-      } else {
-        const claim = await db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ?').bind(r.step + 1 >= list.length ? 1 : 0, new Date().toISOString(), me.id, r.quest_id, r.step).run();
-        if (claim.meta.changes !== 1) continue;
-      }
-      out.push({ quest: r.title, ok: true, text: st.text, finished: r.step + 1 >= list.length, gained });
+      if (!st) continue;
+      if (talking ? (SPOT.includes(st.type) || nameKey(st.npc) !== npc) : (st.type !== kind || st.place.territory !== territory)) continue;
+      const line = await runStep(db, me, r, list, st);
+      if (line) out.push(line);
     }
     return json({ results: out, items: await inventory(db, me.id) });
   }
