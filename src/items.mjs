@@ -38,7 +38,7 @@ export const view = (row, meId) => {
 export async function who(db, request) {
   const token = (request.headers.get('authorization') || '').replace(/^Bearer /, '');
   if (!token) fail('Sign in on the Items tab first.', 401);
-  const row = await db.prepare('SELECT id, name FROM members WHERE token_hash = ?').bind(sha(token)).first();
+  const row = await db.prepare('SELECT id, name, gold FROM members WHERE token_hash = ?').bind(sha(token)).first();
   if (!row) fail('Your sign-in is no longer valid. Use your recovery code on the Items tab.', 401);
   return row;
 }
@@ -124,6 +124,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare('DELETE FROM signs WHERE owner_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
       await cleanOrphans(db);
+      await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
       return json({ removed: true });
     }
@@ -132,7 +133,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
 
   const me = await who(db, request);
 
-  if (!post && path === '/items/me') return json({ memberId: me.id, name: me.name, capacity: CAPACITY, items: await inventory(db, me.id) });
+  if (!post && path === '/items/me') return json({ memberId: me.id, name: me.name, gold: me.gold, capacity: CAPACITY, items: await inventory(db, me.id) });
   if (!post && path === '/items/members') {
     const { results } = await db.prepare('SELECT name FROM members WHERE id != ? ORDER BY name_key').bind(me.id).all();
     return json({ members: results.map(r => r.name) });
