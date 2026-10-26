@@ -3,6 +3,7 @@
 // Items never touch the game. They only exist inside the plugin.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { fail } from './engine.mjs';
+import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
 
 const CAPACITY = 10, MAX_MEMBERS = 300, MAX_ITEMS = 3000, MAX_HELD = 3;
 export const CAP = CAPACITY;
@@ -25,14 +26,20 @@ function itemFields(data) {
   if (!useText) useLabel = '';
   const requires = str(data.requires, 'Required item', 40, false);
   if (requires && !useText) fail('An item that needs something has to have an action, like Open. Fill in "What happens".');
+  const stName = str(data.stName, 'Status name', 30, false), stDesc = str(data.stDesc, 'Status description', 200, false), cures = str(data.cures, 'Status to remove', 30, false);
+  const stIcon = str(data.stIcon, 'Status icon', 80, false);
+  if (stIcon && !ICON.test(stIcon)) fail('Choose an icon for the status.');
+  const stMinutes = Number.isInteger(data.stMinutes) ? data.stMinutes : 0;
+  if (stMinutes < 0 || stMinutes > 43200) fail('A status can last from 1 minute to 30 days. Use 0 to last until removed.');
+  if ((stName || cures) && !useText) fail('An item that gives or removes a status needs an action. Fill in "What happens".');
   const icon = str(data.icon, 'Icon', 80);
   if (!ICON.test(icon)) fail('Choose an icon for the item.');
-  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, consumable: data.consumable === true && useText ? 1 : 0 };
+  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, cures, consumable: data.consumable === true && useText ? 1 : 0 };
 }
 export const view = (row, meId) => {
   const mine = row.creator_id === meId && row.owner_id === meId;
   const v = { id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine, requires: row.requires || '', requiresConsume: !!row.requires_consume, holds: row.holds || 0 };
-  if (mine) v.useText = row.use_text;
+  if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.cures = row.cures || ''; }
   return v;
 };
 export async function who(db, request) {
@@ -98,8 +105,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const to = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(str(data.to, 'Recipient', 40))).first();
       if (!to) fail('No member has that name.', 404);
       if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The item system is full.', 503);
-      const r = await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, consumable, created_at) SELECT ?,?,'dm',?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?")
-        .bind(rand(8), to.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.consumable, new Date().toISOString(), to.id, CAPACITY).run();
+      const r = await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, cures, consumable, created_at) SELECT ?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?")
+        .bind(rand(8), to.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.cures, f.consumable, new Date().toISOString(), to.id, CAPACITY).run();
       if (r.meta.changes !== 1) fail(`${to.name}'s inventory is full.`, 409);
       return json({ granted: true, to: to.name }, 201);
     }
@@ -125,6 +132,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
       await cleanOrphans(db);
       await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM statuses WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
       return json({ removed: true });
     }
@@ -143,8 +151,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     const f = itemFields(await input(request));
     if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The item system is full.', 503);
     const id = rand(8);
-    const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, consumable, created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
-      .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.consumable, new Date().toISOString(), me.id, CAPACITY).run();
+    const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, cures, consumable, created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
+      .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.cures, f.consumable, new Date().toISOString(), me.id, CAPACITY).run();
     if (r.meta.changes !== 1) fail(`Your inventory is full (${CAPACITY} items). Delete or give one away first.`, 409);
     return json({ ok: true, id, items: await inventory(db, me.id) }, 201);
   }
@@ -158,7 +166,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
   if (route === 'update') {
     if (item.creator_id !== me.id) fail('Only the person who made an item can change it.', 403);
     const f = itemFields(await input(request));
-    await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, consumable=? WHERE id=? AND owner_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.consumable, id, me.id).run();
+    await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, cures=?, consumable=? WHERE id=? AND owner_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.cures, f.consumable, id, me.id).run();
   } else if (route === 'delete') {
     await purge(db, id);
   } else if (route === 'seal') {
@@ -192,6 +200,9 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       key = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND id != ? AND lower(name) = ? AND creator_id IN (?, 'dm') LIMIT 1").bind(me.id, id, nameKey(item.requires), item.creator_id).first();
       if (!key) fail(`You need ${item.requires} to do that.`, 409);
     }
+    const curing = item.cures ? await findActive(db, me.id, item.cures) : null;
+    if (item.cures && !curing) fail(`You have no ${item.cures} to cure.`, 409);
+    if (item.st_name) await checkRoom(db, me.id, item.st_name);
     const held = (await db.prepare('SELECT id, name FROM items WHERE owner_id = ? ORDER BY created_at, id').bind('i' + id).all()).results;
     const have = (await db.prepare('SELECT count(*) AS total FROM items WHERE owner_id = ?').bind(me.id).first()).total;
     if (have - (item.consumable ? 1 : 0) - (key && item.requires_consume ? 1 : 0) + held.length > CAPACITY) fail('Not enough room in your inventory for what is inside. Make some space first.', 409);
@@ -201,7 +212,9 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const r = await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(id, me.id).run();
       if (r.meta.changes !== 1) fail('That item is already gone.', 409);
     }
-    return json({ text: item.use_text, consumed: !!item.consumable, gained: held.map(h => h.name), keyUsed: key && item.requires_consume ? item.requires : '', items: await inventory(db, me.id) });
+    if (item.cures) await removeByName(db, me.id, item.cures);
+    if (item.st_name) await applyStatus(db, me.id, { name: item.st_name, icon: item.st_icon || item.icon, description: item.st_desc, isDebuff: !!item.st_debuff, minutes: item.st_minutes, sourceId: item.creator_id });
+    return json({ text: item.use_text, statusGained: item.st_name || '', statusCured: curing ? curing.name : '', consumed: !!item.consumable, gained: held.map(h => h.name), keyUsed: key && item.requires_consume ? item.requires : '', items: await inventory(db, me.id) });
   }
   return json({ ok: true, items: await inventory(db, me.id) });
 }
