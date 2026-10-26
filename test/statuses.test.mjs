@@ -69,3 +69,27 @@ test('a full set of statuses blocks a status item without using it up; Advocates
   assert.equal((await call('POST','/items/admin/remove-member',{adminPassword:'dmpass',name:'Mira'})).status,200);
   assert.equal(db.sqlite.prepare('SELECT count(*) AS n FROM statuses').get().n,0);
 });
+
+test('diagnosis: a sickness from an item or an Advocate can be read, a hidden type never leaks, rolls under 15 learn nothing',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  const r=await call('POST','/items',{name:'Bad berries',icon:'game:20001',useLabel:'Eat',useText:'Bitter.',consumable:true,stName:'Berry fever',stDebuff:true,stType:'sickness',stCure:'Brew moonleaf tea.'},a.token);assert.equal(r.status,201);
+  assert.equal((await call('POST','/items',{name:'Bad',icon:'game:20001',useLabel:'Eat',useText:'x',stName:'S',stType:'weird'},a.token)).status,400);
+  const item=r.items.find(i=>i.id===r.id);assert.equal(item.stType,'sickness');assert.equal(item.stCure,'Brew moonleaf tea.');
+  await call('POST',`/items/${item.id}/give`,{to:'Kael'},a.token);
+  await call('POST',`/items/${item.id}/use`,{},b.token);
+  const seen=(await call('GET','/statuses',undefined,a.token)).statuses.find(s=>s.name==='Berry fever');
+  assert.ok(seen);assert.equal(seen.stType,undefined);assert.equal(seen.stCure,undefined);assert.equal(JSON.stringify(seen).includes('moonleaf'),false);
+  assert.equal((await call('POST','/statuses/diagnose',{patient:'Kael',kind:'x'},a.token)).status,400);
+  assert.equal((await call('POST','/statuses/diagnose',{patient:'Nobody',kind:'sickness'},a.token)).status,404);
+  assert.equal((await call('POST','/statuses/diagnose',{patient:'Kael',kind:'sickness'})).status,401);
+  let hit=0,miss=0,cursed=0;
+  for(let i=0;i<8;i++){const d=await call('POST','/statuses/diagnose',{patient:'kael',kind:'sickness'},a.token);assert.equal(d.status,200);
+    if(d.roll>=15){assert.equal(d.success,true);assert.equal(d.condition,'Berry fever');assert.equal(d.cure,'Brew moonleaf tea.');hit++}else{assert.equal(d.success,false);assert.equal(d.condition,'');assert.equal(d.cure,'');miss++}
+    const c=await call('POST','/statuses/diagnose',{patient:'Kael',kind:'curse'},a.token);if(c.status===200){assert.equal(c.success,false);assert.equal(c.condition,'');cursed++}}
+  assert.equal(hit+miss,8);
+  let limited=false;for(let i=0;i<6;i++)if((await call('POST','/statuses/diagnose',{patient:'Kael',kind:'sickness'},a.token)).status===429)limited=true;assert.equal(limited,true);   // rate limited at 20/min
+  db.sqlite.prepare("DELETE FROM rate_limits").run();
+  assert.equal((await call('POST','/statuses/admin/add',{adminPassword:'dmpass',to:'Mira',...st,name:'Hex',isDebuff:true,statusType:'curse',cureInfo:'Break the idol.'})).status,201);
+  assert.equal((await call('POST','/statuses/admin/add',{adminPassword:'dmpass',to:'Mira',...st,name:'Hex2',statusType:'bogus'})).status,400);
+  const row=db.sqlite.prepare("SELECT st_type, st_cure FROM statuses WHERE name = 'Hex'").get();assert.equal(row.st_type,'curse');assert.equal(row.st_cure,'Break the idol.');
+});
