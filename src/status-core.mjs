@@ -19,8 +19,8 @@ export async function applyStatus(db, memberId, s) {
   await db.prepare('DELETE FROM statuses WHERE expires_at IS NOT NULL AND expires_at <= ?').bind(now.toISOString()).run();
   await db.prepare('DELETE FROM statuses WHERE member_id = ? AND name_key = ?').bind(memberId, statusKey(s.name)).run();
   const expires = s.minutes > 0 ? new Date(now.getTime() + s.minutes * 60000).toISOString() : null;
-  await db.prepare('INSERT INTO statuses (id, member_id, name, name_key, icon, description, is_debuff, expires_at, source_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .bind(randomBytes(6).toString('hex'), memberId, s.name, statusKey(s.name), s.icon, s.description, s.isDebuff ? 1 : 0, expires, s.sourceId, now.toISOString()).run();
+  await db.prepare('INSERT INTO statuses (id, member_id, name, name_key, icon, description, is_debuff, expires_at, source_id, created_at, st_type, st_cure) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(randomBytes(6).toString('hex'), memberId, s.name, statusKey(s.name), s.icon, s.description, s.isDebuff ? 1 : 0, expires, s.sourceId, now.toISOString(), s.type || '', s.cure || '').run();
 }
 export async function findActive(db, memberId, name) {
   return db.prepare(`SELECT id, name FROM statuses WHERE member_id = ? AND name_key = ? AND ${live} LIMIT 1`).bind(memberId, statusKey(name), new Date().toISOString()).first();

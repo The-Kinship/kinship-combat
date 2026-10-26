@@ -2,6 +2,7 @@
 // Status tab: see everyone's statuses, add flavor statuses to yourself, remove them. Putting one on someone else only happens through an item
 // (or an Advocate with the creation password), so nobody can pester another member.
 import { fail } from './engine.mjs';
+import { randomInt } from 'node:crypto';
 import { who, str } from './items.mjs';
 import { applyStatus, MAX_STATUS } from './status-core.mjs';
 
@@ -30,7 +31,9 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
     if (path === '/statuses/admin/add') {
       const to = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(str(d.to, 'Member', 40).toLowerCase().replace(/\s+/g, ' ')).first();
       if (!to) fail('No member has that name.', 404);
-      await applyStatus(db, to.id, { ...fields(d), sourceId: 'dm', holderName: to.name });
+      const type = d.statusType === undefined || d.statusType === null ? '' : d.statusType;
+      if (!['', 'sickness', 'curse'].includes(type)) fail('A status can be a sickness, a curse, or neither.');
+      await applyStatus(db, to.id, { ...fields(d), type, cure: str(d.cureInfo, 'Cure information', 200, false), sourceId: 'dm', holderName: to.name });
       return json({ added: true, to: to.name }, 201);
     }
     if (path === '/statuses/admin/remove') {
@@ -52,6 +55,18 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
     await rate(db, 'status-self:' + me.id, 20);
     await applyStatus(db, me.id, { ...fields(await input(request)), sourceId: me.id });
     return json({ added: true }, 201);
+  }
+  if (post && path === '/statuses/diagnose') {
+    await rate(db, 'diagnose:' + me.id, 20);
+    const d = await input(request);
+    const kind = d.kind;
+    if (kind !== 'sickness' && kind !== 'curse') fail('Choose what kind of reading to do.');
+    const patient = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(str(d.patient, 'Patient', 40).toLowerCase().replace(/\s+/g, ' ')).first();
+    if (!patient) fail('No member has that name.', 404);
+    const roll = 1 + randomInt(20);
+    const found = await db.prepare('SELECT name, st_cure FROM statuses WHERE member_id = ? AND st_type = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at LIMIT 1').bind(patient.id, kind, new Date().toISOString()).first();
+    const ok = roll >= 15 && !!found;
+    return json({ roll, patient: patient.name, success: ok, condition: ok ? found.name : '', cure: ok ? found.st_cure : '' });
   }
   const m = path.match(/^\/statuses\/([a-f0-9]{12})\/remove$/);
   if (!m || !post) fail('Endpoint not found.', 404);
