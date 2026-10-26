@@ -20,7 +20,7 @@ async function scene(t,{kind='classic',minutes,cast,start=true}={}){
   await sync();
   const members={};
   for(const [i,c] of (cast||[]).entries()){
-    const r=await act('participant',{name:c.name,type:c.type,hp:c.hp??1,max:c.max??Math.max(1,c.hp??1),number:c.number??i+1,details:'',loot:c.loot||'',ownerId:c.type==='Player'?ids[c.owner||'player']:null});
+    const r=await act('participant',{name:c.name,type:c.type,hp:c.hp??1,max:c.max??Math.max(1,c.hp??1),number:c.number??i+1,details:'',loot:c.loot||'',...(c.mods?{mods:c.mods}:{}),ownerId:c.type==='Player'?ids[c.owner||'player']:null});
     assert.equal(r.status,200,JSON.stringify(r));
   }
   await sync();
@@ -174,4 +174,28 @@ test('rooms untouched for a week are cleared when a new room is made',async t=>{
   c.db.sqlite.prepare('UPDATE rooms SET updated_at = ? WHERE code = ?').run(new Date(Date.now()-8*86400000).toISOString(),c.code);
   await c.call('/rooms',{name:'New',encounter:'Fresh'});
   assert.equal((await c.view()).status,404);
+});
+
+test('DM modifiers add to every roll, stack, and never push a roll below 1',async t=>{
+  const c=await scene(t,{start:false,cast:[{name:'Hero',type:'Player',hp:50,mods:[{label:'Sword',value:5},{label:'Sick',value:-2}]},{name:'Treant',type:'NPC',hp:500}]});
+  assert.deepEqual(c.person('Hero').mods,[{label:'Sword',value:5},{label:'Sick',value:-2}]);
+  assert.equal((await c.view('player')).room.people.find(p=>p.name==='Hero').mods.length,2);   // everyone can see them
+  assert.equal((await c.act('start')).status,200);await c.sync();
+  const target=c.person('Treant').id;
+  const r=await c.act('roll',{kind:'attack',targetId:target,sides:4},'player');assert.equal(r.status,200);
+  const lr=r.room.lastRoll;assert.equal(lr.bonus,3);assert.equal(lr.total,lr.raw+3);assert.equal(lr.applied,lr.total);assert.equal(lr.after,500-lr.total);
+  assert.match(r.room.log.find(l=>l.message.includes("HP (d")).message,new RegExp(`d4: ${lr.raw}, \\+5 Sword, -2 Sick = ${lr.total}\\)`));
+});
+
+test('a big penalty is floored at 1, only the DM can set modifiers, and only before the fight',async t=>{
+  const c=await scene(t,{start:false,cast:[{name:'Hero',type:'Player',hp:50,mods:[{label:'Cursed',value:-50}]},{name:'Treant',type:'NPC',hp:500}]});
+  const hero=c.person('Hero');
+  assert.equal((await c.act('participant',{...hero,mods:[{label:'Cheat',value:9}]},'player')).status,403);
+  for(const mods of [[{label:'',value:1}],[{label:'x',value:1.5}],[{label:'x',value:100}],'nope',Array.from({length:7},(_, i)=>({label:'m'+i,value:1}))])
+    assert.equal((await c.act('participant',{...hero,mods})).status,400);
+  assert.equal((await c.act('participant',{...hero,mods:[{label:'Zero',value:0},{label:'Cursed',value:-50}]})).status,200);
+  await c.sync();assert.deepEqual(c.person('Hero').mods,[{label:'Cursed',value:-50}]);   // a zero modifier is dropped
+  await c.act('start');await c.sync();
+  assert.equal((await c.act('participant',{...c.person('Hero'),mods:[]})).status,400);   // locked once the fight starts
+  const r=await c.act('roll',{kind:'attack',targetId:c.person('Treant').id,sides:4},'player');assert.equal(r.room.lastRoll.total,1);assert.equal(r.room.lastRoll.applied,1);
 });
