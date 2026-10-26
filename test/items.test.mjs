@@ -116,6 +116,9 @@ test('locked box: needs a key in your inventory, can hold other items, key can b
   assert.equal((await call('POST',`/items/${box.id}/give`,{to:'Kael'},a.token)).status,200);   // give the locked box away
   const kb=(await call('GET','/items/me',undefined,b.token)).items;assert.equal(kb.length,1);assert.equal(kb[0].holds,1);
   const noKey=await call('POST',`/items/${box.id}/use`,{},b.token);assert.equal(noKey.status,409);assert.match(noKey.error,/You need/);
+  await mkItem({name:"The Harbinger's Key"},b.token);   // a forged key made by someone else
+  const forged=await call('POST',`/items/${box.id}/use`,{},b.token);assert.equal(forged.status,409);
+  await call('POST',`/items/${(await call('GET','/items/me',undefined,b.token)).items.find(i=>i.name==="The Harbinger's Key").id}/delete`,{},b.token);
   assert.equal((await call('POST',`/items/${key.id}/give`,{to:'Kael'},a.token)).status,200);
   const opened=await call('POST',`/items/${box.id}/use`,{},b.token);assert.equal(opened.status,200);
   assert.deepEqual(opened.gained,['Magic crystal']);assert.equal(opened.consumed,true);assert.equal(opened.keyUsed,"the harbinger's  key");
