@@ -187,7 +187,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (!item.use_text) fail('This item has nothing to use.');
     let key = null;
     if (item.requires) {
-      key = await db.prepare('SELECT id FROM items WHERE owner_id = ? AND id != ? AND lower(name) = ? LIMIT 1').bind(me.id, id, nameKey(item.requires)).first();
+      // The key must be made by whoever made the box (or granted by an Advocate), so nobody can forge one by copying its name.
+      key = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND id != ? AND lower(name) = ? AND creator_id IN (?, 'dm') LIMIT 1").bind(me.id, id, nameKey(item.requires), item.creator_id).first();
       if (!key) fail(`You need ${item.requires} to do that.`, 409);
     }
     const held = (await db.prepare('SELECT id, name FROM items WHERE owner_id = ? ORDER BY created_at, id').bind('i' + id).all()).results;
