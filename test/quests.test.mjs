@@ -61,3 +61,33 @@ test('giving needs a real Advocate-made item, a full bag stops a gift without lo
   assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests.length,0);
   assert.equal((await admin('assign',{questId:id,to:'Mira'})).status,404);
 });
+
+const spot={zone:'Mist',territory:339,map:72,x:10,y:2,z:-5,mapX:12.5,mapY:9.5};
+test('look, listen and search steps happen at a spot, and a first-come find goes to one player only',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael'),c=await join(call,'Rune');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  assert.equal((await admin('save',{title:'X',steps:[{type:'look',text:'You see.'}]})).status,400);               // needs a place
+  assert.equal((await admin('save',{title:'X',steps:[{type:'look',text:'You see.',place:{...spot,x:'far'}}]})).status,400);
+  const id=(await admin('save',{title:'Keys',steps:[
+    {type:'look',text:'Scratches mark the old gate.',hint:'By the gate',place:spot},
+    {type:'listen',text:'A faint voice sings.',place:spot},
+    {type:'search',text:'Under a stone you find a key.',place:spot,once:true,gift:{name:'Rusty key',icon:'game:20001'}},
+    {type:'talk',npc:'Old Maren',text:'Well done.'}]})).id;
+  for(const n of ['Mira','Kael','Rune'])await admin('assign',{questId:id,to:n});
+  const cur=(await call('GET','/quests/mine',undefined,a.token)).quests[0].current;assert.equal(cur.type,'look');assert.equal(cur.place.territory,339);
+  const act=(tok,type,territory=339)=>call('POST','/quests/act',{type,territory},tok);
+  assert.equal((await act(a.token,'dance')).status,400);
+  assert.equal((await act(a.token,'look',1)).results.length,0);                 // wrong zone
+  assert.equal((await act(a.token,'listen')).results.length,0);                 // wrong action for this step
+  assert.equal((await act(a.token,'look')).results[0].text,'Scratches mark the old gate.');
+  assert.equal((await call('POST','/quests/talk',{npc:'Old Maren'},a.token)).results.length,0);   // spot steps can't be talked through
+  for(const tok of [b.token,c.token]){await act(tok,'look');await act(tok,'listen')}
+  await act(a.token,'listen');
+  let r=await act(a.token,'search');assert.equal(r.results[0].gained[0],'Rusty key');assert.equal(r.items.length,1);
+  r=await act(b.token,'search');assert.equal(r.results[0].ok,false);assert.match(r.results[0].text,/first/);assert.equal(r.items.length,0);
+  assert.equal((await call('GET','/quests/mine',undefined,b.token)).quests[0].step,2);          // loser stays put
+  const list=await admin('list',{});assert.equal(list.quests[0].claims[0].name,'Mira');
+  await admin('reset-claims',{questId:id});
+  r=await act(b.token,'search');assert.equal(r.results[0].gained[0],'Rusty key');
+  assert.equal((await call('POST','/quests/talk',{npc:'Old Maren'},a.token)).results[0].finished,true);
+});
