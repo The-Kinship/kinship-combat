@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
-function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
+function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
 const mk=(db,member='fcpass')=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass',member);return {status:r.status,...await r.json()}};
 const cookie={name:'Burnt cookie',icon:'game:20001',description:'A charred round disc.',flavor:'Smells like charcoal.',useLabel:'Eat',useText:'All you taste is ash.',consumable:true};
 async function join(call,name){const r=await call('POST','/items/register',{name,memberPassword:'fcpass'});assert.equal(r.status,201);return r}
@@ -100,4 +100,38 @@ test('a DM can gift an item straight into a member inventory, and the gift canno
   for(let i=0;i<10;i++)await call('POST','/items/admin/grant',{...cookie,name:'G'+i,to:'Mira',adminPassword:'dmpass'});
   assert.equal((await call('POST','/items/admin/grant',{...cookie,to:'Mira',adminPassword:'dmpass'})).status,409);
   assert.equal((await call('POST','/items/admin/list',{adminPassword:'dmpass'})).items[0].creator,'(DM gift)');
+});
+
+test('locked box: needs a key in your inventory, can hold other items, key can be used up',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  const mkItem=async(f,tok=a.token)=>{const r=await call('POST','/items',{icon:'game:20001',description:'',...f},tok);assert.equal(r.status,201);return r.items.find(i=>i.id===r.id)};
+  assert.equal((await call('POST','/items',{name:'Box',icon:'game:20001',requires:'Key'},a.token)).status,400);
+  const key=await mkItem({name:"The Harbinger's Key"});
+  const crystal=await mkItem({name:'Magic crystal'});
+  const box=await mkItem({name:'Locked box',useLabel:'Open',useText:'The lock clicks open.',requires:"the harbinger's  key",requiresConsume:true,consumable:true});
+  assert.equal(box.requires,"the harbinger's  key");
+  const sealed=await call('POST',`/items/${box.id}/seal`,{itemId:crystal.id},a.token);assert.equal(sealed.status,200);
+  assert.deepEqual(sealed.items.map(i=>i.name),["The Harbinger's Key",'Locked box']);assert.equal(sealed.items[1].holds,1);
+  assert.equal((await call('POST',`/items/${box.id}/seal`,{itemId:box.id},a.token)).status,400);
+  assert.equal((await call('POST',`/items/${box.id}/give`,{to:'Kael'},a.token)).status,200);   // give the locked box away
+  const kb=(await call('GET','/items/me',undefined,b.token)).items;assert.equal(kb.length,1);assert.equal(kb[0].holds,1);
+  const noKey=await call('POST',`/items/${box.id}/use`,{},b.token);assert.equal(noKey.status,409);assert.match(noKey.error,/You need/);
+  assert.equal((await call('POST',`/items/${key.id}/give`,{to:'Kael'},a.token)).status,200);
+  const opened=await call('POST',`/items/${box.id}/use`,{},b.token);assert.equal(opened.status,200);
+  assert.deepEqual(opened.gained,['Magic crystal']);assert.equal(opened.consumed,true);assert.equal(opened.keyUsed,"the harbinger's  key");
+  assert.deepEqual(opened.items.map(i=>i.name),['Magic crystal']);
+});
+
+test('opening needs room, and deleting a container deletes what is inside',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
+  const mkItem=async f=>{const r=await call('POST','/items',{icon:'game:20001',description:'',...f},a.token);assert.equal(r.status,201);return r.items.find(i=>i.id===r.id)};
+  const box=await mkItem({name:'Chest',useText:'Open.',useLabel:'Open'});
+  for(const n of ['A','B','C','D'])await call('POST',`/items/${box.id}/seal`,{itemId:(await mkItem({name:n})).id},a.token);
+  assert.equal((await call('GET','/items/me',undefined,a.token)).items.length,2);   // chest + the fourth item, which was refused
+  assert.equal((await call('POST',`/items/${box.id}/delete`,{},a.token)).status,200);
+  assert.equal(db.sqlite.prepare('SELECT count(*) AS n FROM items WHERE name IN (?,?,?)').get('A','B','C').n,0);
+  const c2=await mkItem({name:'Chest2',useText:'Open.',useLabel:'Open'});
+  await call('POST',`/items/${c2.id}/seal`,{itemId:(await mkItem({name:'X'})).id},a.token);
+  for(let i=0;i<8;i++)await mkItem({name:'F'+i});
+  const full=await call('POST',`/items/${c2.id}/use`,{},a.token);assert.equal(full.status,409);assert.match(full.error,/room/);
 });
