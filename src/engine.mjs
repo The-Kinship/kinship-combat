@@ -56,6 +56,17 @@ function arrange(room, mode) {
   }
   room.order = order; room.index = Math.max(0, order.findIndex(id => room.people.find(p => p.id === id).hp > 0));
 }
+// Modifiers are set by the DM when a character is added and apply to every roll in the encounter: [{ label, value }].
+function modifiers(list) {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list) || list.length > 6) fail('A character can have up to 6 modifiers.');
+  return list.map(m => {
+    if (!m || typeof m !== 'object') fail('Modifier details are missing.');
+    return { label: text(m.label, 'Modifier name', 30), value: integer(m.value, 'Modifier', -99, 99) };
+  }).filter(m => m.value !== 0);
+}
+const bonusOf = person => (person.mods || []).reduce((sum, m) => sum + m.value, 0);
+const modText = person => (person.mods || []).map(m => `${m.value > 0 ? '+' : ''}${m.value} ${m.label}`).join(', ');
 function participant(room, input) {
   if (!input || typeof input !== 'object') fail('Participant details are missing.');
   const max = integer(input.max, 'Maximum HP', 1, 99999), hp = integer(input.hp, 'HP', 0, max);
@@ -63,7 +74,7 @@ function participant(room, input) {
   const ownerId = input.type === 'NPC' ? null : input.ownerId || null;
   if (ownerId && !room.members.some(m => m.id === ownerId)) fail('Character owner is not in the room.');
   return { id: input.id || randomUUID(), name: text(input.name, 'Character name', 60), type: input.type, max, hp,
-    number: integer(input.number, 'Order number', 1, 999), details: text(input.details || '', 'Details', 300, false), loot: text(input.loot || '', 'Loot', 200, false), ownerId };
+    number: integer(input.number, 'Order number', 1, 999), details: text(input.details || '', 'Details', 300, false), loot: text(input.loot || '', 'Loot', 200, false), ownerId, mods: modifiers(input.mods) };
 }
 
 const up = list => list.filter(p => p.hp > 0);
@@ -162,9 +173,10 @@ function apply(room, member, command) {
       const target = room.people.find(x => x.id === p.targetId); if (!target) fail('Choose a valid target.');
       const source = actor(room);
       snapshot(room); const raw = randomInt(1, p.sides + 1), before = target.hp;
-      target.hp = Math.max(0, Math.min(target.max, target.hp + (p.kind === 'heal' ? raw : -raw)));
-      room.lastRoll = { actorId: source.id, targetId: target.id, kind: p.kind, sides: p.sides, raw, total: raw, applied: Math.abs(before - target.hp), before, after: target.hp };
-      log(room, `${source.name} → ${target.name}: ${p.kind === 'heal' ? 'heals' : 'attacks'} for ${room.lastRoll.applied} HP (d${p.sides}: ${raw}). ${before} → ${target.hp} HP.`);
+      const bonus = bonusOf(source), total = Math.max(1, raw + bonus);   // modifiers add to the roll, which never goes below 1
+      target.hp = Math.max(0, Math.min(target.max, target.hp + (p.kind === 'heal' ? total : -total)));
+      room.lastRoll = { actorId: source.id, targetId: target.id, kind: p.kind, sides: p.sides, raw, bonus, mods: structuredClone(source.mods || []), total, applied: Math.abs(before - target.hp), before, after: target.hp };
+      log(room, `${source.name} → ${target.name}: ${p.kind === 'heal' ? 'heals' : 'attacks'} for ${room.lastRoll.applied} HP (d${p.sides}: ${raw}${bonus || source.mods?.length ? `, ${modText(source)} = ${total}` : ''}). ${before} → ${target.hp} HP.`);
       if (before > 0 && target.hp === 0) {
         log(room, `${target.name} is down.`);
         if (target.loot) { room.drops.push({ personId: target.id, name: target.name, loot: target.loot }); log(room, `${target.name} dropped loot: ${target.loot}`); }
