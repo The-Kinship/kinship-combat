@@ -73,9 +73,19 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     await rate(db, 'items-admin:' + ip, 30);
     const data = await input(request); checkCreate(data.adminPassword);
     if (path === '/items/admin/list') {
-      const { results } = await db.prepare('SELECT i.id, i.name, i.icon, i.description, o.name AS owner, c.name AS creator FROM items i LEFT JOIN members o ON o.id = i.owner_id LEFT JOIN members c ON c.id = i.creator_id ORDER BY i.created_at DESC LIMIT 300').all();
+      const { results } = await db.prepare('SELECT i.id, i.name, i.icon, i.description, i.creator_id, o.name AS owner, c.name AS creator FROM items i LEFT JOIN members o ON o.id = i.owner_id LEFT JOIN members c ON c.id = i.creator_id ORDER BY i.created_at DESC LIMIT 300').all();
       const members = (await db.prepare('SELECT name FROM members ORDER BY name_key').all()).results.map(m => m.name);
-      return json({ items: results.map(r => ({ id: r.id, name: r.name, icon: r.icon, description: r.description, owner: r.owner || '(removed)', creator: r.creator || '(removed)' })), members });
+      return json({ items: results.map(r => ({ id: r.id, name: r.name, icon: r.icon, description: r.description, owner: r.owner || '(removed)', creator: r.creator_id === 'dm' ? '(DM gift)' : (r.creator || '(removed)') })), members });
+    }
+    if (path === '/items/admin/grant') {
+      const f = itemFields(data);
+      const to = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(str(data.to, 'Recipient', 40))).first();
+      if (!to) fail('No member has that name.', 404);
+      if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The item system is full.', 503);
+      const r = await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, consumable, created_at) SELECT ?,?,'dm',?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?")
+        .bind(rand(8), to.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.consumable, new Date().toISOString(), to.id, CAPACITY).run();
+      if (r.meta.changes !== 1) fail(`${to.name}'s inventory is full.`, 409);
+      return json({ granted: true, to: to.name }, 201);
     }
     if (path === '/items/admin/delete') {
       const r = await db.prepare('DELETE FROM items WHERE id = ?').bind(str(data.itemId, 'Item', 20)).run();
