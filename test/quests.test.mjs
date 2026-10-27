@@ -120,3 +120,35 @@ test('a step can need a status, use it up, and give one; a full status list stop
   r=await talk('Guard');assert.equal(r.results[0].ok,true);
   assert.equal((await call('GET','/statuses',undefined,a.token)).statuses.some(s=>s.name==='Blessed'),false);   // used up
 });
+
+test('a quest can start from an Advocate-made item or a spot, with an offer that must be accepted',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  const body={title:'Carved Warning',intro:'Someone left a mark.',steps:[{type:'talk',npc:'Old Maren',text:'I know that mark.'}]};
+  assert.equal((await admin('save',{...body,startPlace:spot})).status,400);                    // text needed with a start spot
+  const id=(await admin('save',{...body,startPlace:spot,startText:'A tree is carved with a crow.'})).id;
+  const hidden=(await admin('save',{title:'Hidden',steps:[{type:'talk',npc:'X',text:'y'}]})).id;
+  const starts=(await call('GET','/quests/starts',undefined,a.token)).starts;
+  assert.equal(starts.length,1);assert.equal(starts[0].questId,id);assert.equal(starts[0].place.territory,339);assert.equal(JSON.stringify(starts).includes('Carved'),false);
+  let o=(await call('POST','/quests/offer',{questId:id},a.token)).offer;assert.equal(o.title,'Carved Warning');assert.equal(o.text,'A tree is carved with a crow.');
+  assert.equal((await call('POST','/quests/offer',{questId:hidden},a.token)).offer,null);        // no spot, no offer
+  assert.equal((await call('POST','/quests/accept',{questId:hidden},a.token)).status,403);       // can't just accept anything
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests.length,0);              // looking alone starts nothing
+  assert.equal((await call('POST','/quests/accept',{questId:id},a.token)).status,201);
+  assert.equal((await call('POST','/quests/accept',{questId:id},a.token)).status,409);            // once only
+  assert.equal((await call('GET','/quests/starts',undefined,a.token)).starts.length,0);
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].title,'Carved Warning');
+  // an Advocate-made letter
+  assert.equal((await call('POST','/items/admin/grant',{adminPassword:'dmpass',to:'Kael',name:'Odd letter',icon:'game:20001',startsQuest:hidden})).status,400);   // needs an action
+  assert.equal((await call('POST','/items/admin/grant',{adminPassword:'dmpass',to:'Kael',name:'Odd letter',icon:'game:20001',useLabel:'Read',useText:'It is sealed with black wax.',consumable:true,startsQuest:'nope'})).status,404);
+  assert.equal((await call('POST','/items/admin/grant',{adminPassword:'dmpass',to:'Kael',name:'Odd letter',icon:'game:20001',useLabel:'Read',useText:'It is sealed with black wax.',consumable:true,startsQuest:hidden})).status,201);
+  const letter=(await call('GET','/items/me',undefined,b.token)).items[0];
+  const used=await call('POST',`/items/${letter.id}/use`,{},b.token);assert.equal(used.offer.questId,hidden);assert.equal(used.items.length,1);   // not used up yet
+  assert.equal((await call('POST','/quests/accept',{questId:hidden,itemId:'nothere'},b.token)).status,409);
+  assert.equal((await call('POST','/quests/accept',{questId:hidden,itemId:letter.id},b.token)).status,201);
+  assert.equal((await call('GET','/items/me',undefined,b.token)).items.length,0);                  // consumed on accept
+  assert.equal((await call('GET','/quests/mine',undefined,b.token)).quests[0].title,'Hidden');
+  // a player-made item can never start a quest
+  const fake=await call('POST','/items',{name:'Fake',icon:'game:20001',useLabel:'Read',useText:'x',startsQuest:id},a.token);const fk=fake.items.find(i=>i.id===fake.id);
+  const u=await call('POST',`/items/${fk.id}/use`,{},a.token);assert.equal(u.offer,null);
+});
