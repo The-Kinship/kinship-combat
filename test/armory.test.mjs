@@ -90,4 +90,5 @@ test('anyone can look at what another character is wearing',async t=>{
   const seen=await call('GET','/armory/of?name=mira',undefined,b);assert.equal(seen.status,200);assert.equal(seen.name,'Mira');assert.equal(seen.slots.find(s=>s.slot==='helm').item.name,'Iron Helm');assert.equal(seen.slots.find(s=>s.slot==='helm').item.canEdit,false);
   assert.equal((await call('GET','/armory/of?name=Nobody',undefined,b)).status,404);
   assert.equal((await call('GET','/armory/of?name=Mira')).status,401);
+  const full=await call('GET','/armory/of?name='+encodeURIComponent('Mira Silverborne'),undefined,b);assert.equal(full.status,200);assert.equal(full.name,'Mira');   // roster uses the longer name
 });
