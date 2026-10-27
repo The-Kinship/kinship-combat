@@ -22,7 +22,7 @@ async function rate(db,key,maximum) {
   const row = await db.prepare('INSERT INTO rate_limits (key, hits, expires) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET hits = hits + 1 RETURNING hits').bind(hashed,Date.now()+120000).first();
   if (row.hits > maximum) fail('Too many requests. Please wait a minute.',429);
 }
-async function find(db,code) { const row = await db.prepare('SELECT state FROM rooms WHERE code = ?').bind(code).first(); if (!row) fail('Room not found. Check the code with your DM.',404); return JSON.parse(row.state); }
+async function find(db,code) { const row = await db.prepare('SELECT state FROM rooms WHERE code = ?').bind(code).first(); if (!row) fail('Room not found. Check the code with your SM.',404); return JSON.parse(row.state); }
 async function update(db,room,revision) {
   const result = await db.prepare('UPDATE rooms SET state = ?, revision = ?, updated_at = ? WHERE code = ? AND revision = ?').bind(JSON.stringify(room),room.revision,new Date().toISOString(),room.code,revision).run();
   return result.meta.changes === 1;
@@ -38,7 +38,7 @@ const STALE_DAYS = 7;
 function checkCreate(supplied,expected) {
   if (!expected) fail('Creating is switched off until the creation password is set in Cloudflare.',503);
   const a = createHash('sha256').update(String(supplied ?? '')).digest(), b = createHash('sha256').update(String(expected)).digest();
-  if (!timingSafeEqual(a,b)) fail('That creation password is not right. Ask your DM or the FC leader.',403);
+  if (!timingSafeEqual(a,b)) fail('That creation password is not right. Ask your SM or the FC leader.',403);
 }
 function checkMember(supplied,expected) {
   if (!expected) fail('Items are switched off until the member password is set in Cloudflare.',503);
@@ -90,7 +90,7 @@ export async function handle(request,db,createPassword,memberPassword,bankPasswo
     }
     const token = (request.headers.get('authorization') || '').replace(/^Bearer /,''); const member = authenticate(room,token);
     if (route === 'close' && request.method === 'POST') {
-      if (member.role !== 'dm') fail('Only the DM can close the encounter.',403);
+      if (member.role !== 'dm') fail('Only the SM can close the encounter.',403);
       await db.prepare('DELETE FROM rooms WHERE code = ?').bind(code).run();
       return json({closed:true});
     }

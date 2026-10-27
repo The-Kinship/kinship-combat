@@ -1,5 +1,5 @@
 'use strict';
-// RP scenes: a DM creates a scene, players join it with the code, and the DM sends popups to everyone or to chosen people.
+// RP scenes: a SM creates a scene, players join it with the code, and the SM sends popups to everyone or to chosen people.
 import { randomBytes } from 'node:crypto';
 import { makeMember, authenticate, fail } from './engine.mjs';
 
@@ -12,7 +12,7 @@ function str(value, name, max, required = true) {
 }
 async function find(db, code) {
   const row = await db.prepare('SELECT state FROM scenes WHERE code = ?').bind(code).first();
-  if (!row) fail('Scene not found. Check the code with your DM.', 404);
+  if (!row) fail('Scene not found. Check the code with your SM.', 404);
   return JSON.parse(row.state);
 }
 async function save(db, scene, revision) {
@@ -70,7 +70,7 @@ export async function handleScenes(request, db, path, { json, input, rate, ip, c
     return json({ ...view(scene0, me), events: Number.isFinite(after) && after >= 0 ? eventsFor(scene0, me, after) : [] });
   }
   if (route === 'send' && request.method === 'POST') {
-    if (me.role !== 'dm') fail('Only the DM can send popups.', 403);
+    if (me.role !== 'dm') fail('Only the SM can send popups.', 403);
     await rate(db, 'scene-send:' + me.id, 60);
     const data = await input(request), text = str(data.text, 'Popup text', 300), ooc = str(data.ooc, 'OOC note', 200, false);
     let combat = '';
@@ -94,12 +94,12 @@ export async function handleScenes(request, db, path, { json, input, rate, ip, c
     return json({ ok: true, delivered: result.delivered, lastId: scene.nextId - 1 });
   }
   if (route === 'leave' && request.method === 'POST') {
-    if (me.role === 'dm') fail('The DM closes the scene instead of leaving it.');
+    if (me.role === 'dm') fail('The SM closes the scene instead of leaving it.');
     await mutate(db, code, s => { s.members = s.members.filter(m => m.id !== me.id); });
     return json({ left: true });
   }
   if (route === 'kick' && request.method === 'POST') {
-    if (me.role !== 'dm') fail('Only the DM can remove people.', 403);
+    if (me.role !== 'dm') fail('Only the SM can remove people.', 403);
     const data = await input(request), id = str(data.memberId, 'Person', 60);
     const { result } = await mutate(db, code, s => {
       const target = s.members.find(m => m.id === id && m.role !== 'dm');
@@ -109,7 +109,7 @@ export async function handleScenes(request, db, path, { json, input, rate, ip, c
     return json({ removed: true, name: result });
   }
   if (route === 'close' && request.method === 'POST') {
-    if (me.role !== 'dm') fail('Only the DM can close the scene.', 403);
+    if (me.role !== 'dm') fail('Only the SM can close the scene.', 403);
     await db.prepare('DELETE FROM scenes WHERE code = ?').bind(code).run();
     return json({ closed: true });
   }

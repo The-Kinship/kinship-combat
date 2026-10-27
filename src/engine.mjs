@@ -1,7 +1,7 @@
 'use strict';
 import { randomInt, randomUUID, randomBytes, createHash } from 'node:crypto';
 const KINDS = ['classic', 'lastStanding', 'spar', 'timed'];
-const OOC_NOTE = '((Loot will be distributed by the DM in game after the encounter.))';
+const OOC_NOTE = '((Loot will be distributed by the SM in game after the encounter.))';
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const hash = token => createHash('sha256').update(token).digest('hex');
 function text(value, name, max, required = true) {
@@ -56,7 +56,7 @@ function arrange(room, mode) {
   }
   room.order = order; room.index = Math.max(0, order.findIndex(id => room.people.find(p => p.id === id).hp > 0));
 }
-// Modifiers are set by the DM when a character is added and apply to every roll in the encounter: [{ label, value }].
+// Modifiers are set by the SM when a character is added and apply to every roll in the encounter: [{ label, value }].
 function modifiers(list) {
   if (list === undefined || list === null) return [];
   if (!Array.isArray(list) || list.length > 6) fail('A character can have up to 6 modifiers.');
@@ -131,7 +131,7 @@ function apply(room, member, command, boosts = []) {
   const receipt = `${member.id}:${command.actionId}`;
   if (room.receipts.includes(receipt)) return false;
   if (command.revision !== room.revision) fail('The encounter changed. Review the latest state and try again.', 409);
-  const dm = () => { if (member.role !== 'dm') fail('Only the encounter creator (DM) may do that.', 403); };
+  const dm = () => { if (member.role !== 'dm') fail('Only the encounter creator (SM) may do that.', 403); };
   const combat = () => { if (room.phase === 'ended') fail('The encounter is over.'); if (room.phase !== 'combat') fail('Start the encounter first.'); };
   const setup = () => { dm(); if (room.phase === 'ended') fail('The encounter is over.'); if (room.phase !== 'setup') fail('Return to setup to edit the cast.'); };
   const { type, payload: p = {} } = command;
@@ -167,7 +167,7 @@ function apply(room, member, command, boosts = []) {
       room.endsAt = room.kind === 'timed' ? new Date(Date.now() + room.minutes * 60000).toISOString() : null;
       log(room, `Encounter begins · ${{ classic: 'Classic', lastStanding: 'Last one standing', spar: 'Spar', timed: `Timed (${room.minutes} min)` }[room.kind]}. ${actor(room).name} acts first.`); break;
     case 'roll': {
-      combat(); if (!canAct(room, member)) fail('Only this character’s owner may roll. The DM controls NPCs.', 403);
+      combat(); if (!canAct(room, member)) fail('Only this character’s owner may roll. The SM controls NPCs.', 403);
       if (![4,6,8,10,12,20,100].includes(p.sides)) fail('Choose a standard D&D die.');
       if (!['attack','heal'].includes(p.kind)) fail('Choose attack or heal.');
       const target = room.people.find(x => x.id === p.targetId); if (!target) fail('Choose a valid target.');
@@ -192,16 +192,16 @@ function apply(room, member, command, boosts = []) {
       break;
     }
     case 'next': {
-      combat(); if (member.role !== 'dm' && !canAct(room, member)) fail('Only the current player or DM can advance the turn.', 403);
+      combat(); if (member.role !== 'dm' && !canAct(room, member)) fail('Only the current player or SM can advance the turn.', 403);
       snapshot(room);
-      if (!advance(room)) { room.history.pop(); fail('All characters are downed. The DM can undo or return to setup.'); }
+      if (!advance(room)) { room.history.pop(); fail('All characters are downed. The SM can undo or return to setup.'); }
       log(room, `${actor(room).name}’s turn · Round ${room.round}.`); break;
     }
     case 'undo':
       dm(); if (room.phase === 'setup') fail('Start the encounter first.');
       if (room.phase === 'ended' && room.result?.reason === 'time') fail('Time ran out, so this encounter cannot be undone.');
-      if (!room.history.length) fail('There is no action to undo.'); Object.assign(room, room.history.pop()); log(room, 'DM restored the previous combat state.'); break;
-    case 'setup': dm(); if (room.phase === 'ended') fail('The encounter is over. Close it when you are done.'); room.phase = 'setup'; room.history = []; room.endsAt = null; room.drops = []; room.result = null; log(room, 'DM reopened encounter setup. Current HP is retained.'); break;
+      if (!room.history.length) fail('There is no action to undo.'); Object.assign(room, room.history.pop()); log(room, 'SM restored the previous combat state.'); break;
+    case 'setup': dm(); if (room.phase === 'ended') fail('The encounter is over. Close it when you are done.'); room.phase = 'setup'; room.history = []; room.endsAt = null; room.drops = []; room.result = null; log(room, 'SM reopened encounter setup. Current HP is retained.'); break;
     default: fail('Unknown action.');
   }
   room.revision++; room.updatedAt = new Date().toISOString(); room.receipts.push(receipt); room.receipts = room.receipts.slice(-300);
