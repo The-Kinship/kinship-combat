@@ -4,7 +4,7 @@
 import { fail } from './engine.mjs';
 import { randomInt } from 'node:crypto';
 import { who, rand, str, nameKey, itemFields, inventory, ownerSlots, CAP, STACK } from './items.mjs';
-import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
+import { applyStatus, bonus, rollBonuses, checkRoom, findActive, removeByName } from './status-core.mjs';
 
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
 function grant(g, at) {
@@ -13,7 +13,7 @@ function grant(g, at) {
   if (!ICON.test(icon)) fail('Choose an icon for the status.');
   const minutes = g.minutes === undefined || g.minutes === null ? 0 : g.minutes;
   if (!Number.isInteger(minutes) || minutes < 0 || minutes > 43200) fail('A status can last from 1 minute to 30 days. Use 0 to last until removed.');
-  return { name: str(g.name, `${at} status name`, 30), description: str(g.description, `${at} status description`, 200, false), icon, minutes, isDebuff: g.isDebuff === true };
+  return { name: str(g.name, `${at} status name`, 30), description: str(g.description, `${at} status description`, 200, false), icon, minutes, isDebuff: g.isDebuff === true, atk: bonus(g.atk, 'Attack bonus'), heal: bonus(g.heal, 'Heal bonus') };
 }
 
 const MAX_QUESTS = 60, MAX_STEPS = 12, MAX_ACTIVE = 15;
@@ -249,9 +249,10 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'blocked', { result: line }) });
     };
     if (f.npc_hp <= 0) return await finish();       // the fight was won but the reward was held up, so try again
-    const mine = rollDie(spec.playerDie, spec.playerBonus);
+    const boosts = await rollBonuses(db, me.id), boost = boosts.reduce((n, b) => n + b.atk, 0);
+    const mine = rollDie(spec.playerDie, spec.playerBonus + boost);
     f.npc_hp = Math.max(0, f.npc_hp - mine.total);
-    log.push(`You strike ${st.npc} for ${mine.total} (d${spec.playerDie}: ${mine.raw}${bonusText(spec.playerBonus)}).`);
+    log.push(`You strike ${st.npc} for ${mine.total} (d${spec.playerDie}: ${mine.raw}${bonusText(spec.playerBonus)}${boosts.filter(b => b.atk).map(b => `, ${b.atk > 0 ? '+' : ''}${b.atk} ${b.label}`).join('')}).`);
     if (f.npc_hp <= 0) { log.push(`${st.npc} goes down.`); return await finish(); }
     const theirs = rollDie(spec.npcDie, spec.npcBonus);
     f.player_hp = Math.max(0, f.player_hp - theirs.total);

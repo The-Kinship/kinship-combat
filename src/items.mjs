@@ -4,7 +4,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { fail } from './engine.mjs';
 import { earn } from './bank.mjs';
-import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
+import { applyStatus, bonus, checkRoom, findActive, removeByName } from './status-core.mjs';
 
 const CAPACITY = 10, MAX_MEMBERS = 300, MAX_PER_PLAYER = 10, MAX_ITEMS = 3000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
 export const CAP = CAPACITY;
@@ -20,7 +20,7 @@ export function str(value, name, max, required = true) {
   if (typeof value !== 'string' || value.length > max || (required && !value.trim())) fail(`${name} is required and must be at most ${max} characters.`);
   return value.trim();
 }
-export function itemFields(data) {
+export function itemFields(data, allowBonus = false) {
   const name = str(data.name, 'Item name', 40), description = str(data.description, 'Description', 300, false), flavor = str(data.flavor, 'Flavor text', 150, false);
   const useText = str(data.useText, 'What happens when used', 400, false);
   let useLabel = str(data.useLabel, 'Use button label', 20, false);
@@ -37,26 +37,27 @@ export function itemFields(data) {
   const stType = data.stType === undefined || data.stType === null ? '' : data.stType;
   if (!['', 'sickness', 'curse'].includes(stType)) fail('A status can be a sickness, a curse, or neither.');
   const stCure = str(data.stCure, 'Cure information', 200, false);
+  const stAtk = allowBonus && stName ? bonus(data.stAtk, 'Attack bonus') : 0, stHeal = allowBonus && stName ? bonus(data.stHeal, 'Heal bonus') : 0;   // only Advocates can give a status a roll bonus
   const startsQuest = str(data.startsQuest, 'Quest', 20, false);
   const icon = str(data.icon, 'Icon', 80);
   if (!ICON.test(icon)) fail('Choose an icon for the item.');
-  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
+  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
 }
 // A reagent can name up to three other items it combines with, and say what they make. Stored as JSON: { with: [names], result: itemFields }.
-function recipeJson(data) {
+function recipeJson(data, allowBonus = false) {
   if (!Array.isArray(data.with) || data.with.length === 0) return '';
   if (data.with.length > MAX_WITH) fail(`A recipe can use up to ${MAX_WITH} other items.`);
   const names = data.with.map(n => str(n, 'Reagent name', 40)), keys = names.map(nameKey);
   if (new Set(keys).size !== keys.length) fail('List each reagent once.');
   if (keys.includes(nameKey(String(data.name ?? '')))) fail('An item cannot be combined with another one of itself.');
   if (!data.result || typeof data.result !== 'object' || Array.isArray(data.result)) fail('Say what the combination makes.');
-  return JSON.stringify({ with: names, result: itemFields(data.result) });
+  return JSON.stringify({ with: names, result: itemFields(data.result, allowBonus) });
 }
-const asView = f => ({ name: f.name, icon: f.icon, description: f.description, flavor: f.flavor, useLabel: f.useLabel, useText: f.useText, consumable: !!f.consumable, requires: f.requires, requiresConsume: !!f.requiresConsume, stName: f.stName, stDesc: f.stDesc, stIcon: f.stIcon, stDebuff: !!f.stDebuff, stMinutes: f.stMinutes, stType: f.stType, stCure: f.stCure, cures: f.cures });
+const asView = f => ({ name: f.name, icon: f.icon, description: f.description, flavor: f.flavor, useLabel: f.useLabel, useText: f.useText, consumable: !!f.consumable, requires: f.requires, requiresConsume: !!f.requiresConsume, stName: f.stName, stDesc: f.stDesc, stIcon: f.stIcon, stDebuff: !!f.stDebuff, stMinutes: f.stMinutes, stType: f.stType, stCure: f.stCure, stAtk: f.stAtk, stHeal: f.stHeal, cures: f.cures });
 export const view = (row, meId) => {
   const mine = row.creator_id === meId && row.owner_id === meId;
   const v = { id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine, canCombine: !!row.recipe, requires: row.requires || '', requiresConsume: !!row.requires_consume, holds: row.holds || 0 };
-  if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.result = asView(r.result); } }
+  if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.result = asView(r.result); } }
   return v;
 };
 export async function who(db, request) {
@@ -79,7 +80,7 @@ async function purge(db, id) {   // delete an item and anything inside it
 const cleanOrphans = db => db.prepare("DELETE FROM items WHERE length(owner_id) = 17 AND substr(owner_id, 1, 1) = 'i' AND substr(owner_id, 2) NOT IN (SELECT id FROM items)").run();
 // Stacking: every unit is still its own row, but identical units (same maker, same text, same everything) share a slot, STACK to a slot.
 // An item with things inside it never stacks. The first unit of a stack stands for it when the plugin uses, gives or stashes it.
-const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'cures', 'recipe', 'consumable', 'starts_quest'];
+const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'st_atk', 'st_heal', 'cures', 'recipe', 'consumable', 'starts_quest'];
 const keyOf = r => r.holds > 0 ? 'id:' + r.id : JSON.stringify(KEYS.map(k => r[k] ?? ''));
 export function stacks(rows) {
   const groups = new Map(), at = new Map(rows.map((r, i) => [r.id, i]));
@@ -158,7 +159,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       return json({ stashes, items: results.map(r => ({ id: r.id, name: r.name, icon: r.icon, description: r.description, owner: r.owner || '(removed)', creator: r.creator_id === 'dm' ? '(DM gift)' : (r.creator || '(removed)') })), members });
     }
     if (path === '/items/admin/grant') {
-      const f = itemFields(data), recipe = recipeJson(data);
+      const f = itemFields(data, true), recipe = recipeJson(data, true);
       if (f.startsQuest) {
         if (!f.useText) fail('An item that starts a quest needs an action. Fill in "What happens".');
         if (!(await db.prepare('SELECT id FROM quests WHERE id = ?').bind(f.startsQuest).first())) fail('That quest no longer exists.', 404);
@@ -179,8 +180,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const made = [];
       for (let i = 0; i < copies; i++) {
         made.push(rand(8));
-        await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, starts_quest, created_at) VALUES (?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-          .bind(made[i], owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString()).run();
+        await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, starts_quest, created_at, st_atk, st_heal) VALUES (?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+          .bind(made[i], owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString(), f.stAtk, f.stHeal).run();
       }
       if ((await ownerSlots(db, owner)) > cap) {
         for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
@@ -240,8 +241,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     const made = [];
     for (let n = 0; n < qty; n++) {
       const id = rand(8);
-      const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
-        .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), me.id, CAPACITY * STACK).run();
+      const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at, st_atk, st_heal) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
+        .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), f.stAtk, f.stHeal, me.id, CAPACITY * STACK).run();
       if (r.meta.changes === 1) made.push(id); else break;
     }
     if (made.length < qty || (await ownerSlots(db, me.id)) > CAPACITY) {
@@ -262,7 +263,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (item.creator_id !== me.id) fail('Only the person who made an item can change it.', 403);
     const body = await input(request), f = itemFields(body), recipe = recipeJson(body);
     for (const unit of await groupIds(db, me.id, id))
-      await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
+      await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, st_atk=?, st_heal=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.stAtk, f.stHeal, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
   } else if (route === 'delete') {
     await purge(db, id);
   } else if (route === 'combine') {
@@ -277,8 +278,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (missing.length) fail(`You still need ${missing.join(missing.length > 2 ? ', ' : ' and ')} to combine this.`, 409);
     if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS + picked.length) fail('The RP system is full.', 503);
     for (const p of picked) await purge(db, p.id);
-    await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(rand(8), me.id, item.creator_id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString()).run();
+    await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at, st_atk, st_heal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(rand(8), me.id, item.creator_id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), f.stAtk || 0, f.stHeal || 0).run();
     return json({ combined: f.name, used: picked.map(p => p.name), items: await inventory(db, me.id) });
   } else if (route === 'seal') {
     const data = await input(request), inner = str(data.itemId, 'Item', 20);
@@ -327,7 +328,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       if (r.meta.changes !== 1) fail('That item is already gone.', 409);
     }
     if (item.cures) await removeByName(db, me.id, item.cures);
-    if (item.st_name) await applyStatus(db, me.id, { name: item.st_name, icon: item.st_icon || item.icon, description: item.st_desc, isDebuff: !!item.st_debuff, minutes: item.st_minutes, type: item.st_type || '', cure: item.st_cure || '', sourceId: item.creator_id });
+    if (item.st_name) await applyStatus(db, me.id, { name: item.st_name, icon: item.st_icon || item.icon, description: item.st_desc, isDebuff: !!item.st_debuff, minutes: item.st_minutes, type: item.st_type || '', cure: item.st_cure || '', atk: item.st_atk || 0, heal: item.st_heal || 0, sourceId: item.creator_id });
     let offer = null;
     if (item.starts_quest && item.creator_id === 'dm') {
       const q = await db.prepare('SELECT id, title, intro FROM quests WHERE id = ?').bind(item.starts_quest).first();

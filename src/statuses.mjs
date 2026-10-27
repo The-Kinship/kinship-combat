@@ -4,7 +4,7 @@
 import { fail } from './engine.mjs';
 import { randomInt } from 'node:crypto';
 import { who, str } from './items.mjs';
-import { applyStatus, MAX_STATUS } from './status-core.mjs';
+import { applyStatus, bonus, MAX_STATUS } from './status-core.mjs';
 
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
 function fields(d) {
@@ -20,6 +20,7 @@ const view = (r, meId, now) => ({
   id: r.id, memberName: r.member_name, name: r.name, icon: r.icon, description: r.description, isDebuff: !!r.is_debuff,
   secondsLeft: r.expires_at ? Math.max(0, Math.floor((Date.parse(r.expires_at) - now) / 1000)) : null,
   mine: r.member_id === meId, canRemove: r.member_id === meId || r.source_id === meId,
+  atkBonus: r.atk_bonus || 0, healBonus: r.heal_bonus || 0,
   self: r.member_id === meId && r.source_id === 'self',
 });
 
@@ -34,7 +35,7 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
       if (!to) fail('No member has that name.', 404);
       const type = d.statusType === undefined || d.statusType === null ? '' : d.statusType;
       if (!['', 'sickness', 'curse'].includes(type)) fail('A status can be a sickness, a curse, or neither.');
-      await applyStatus(db, to.id, { ...fields(d), type, cure: str(d.cureInfo, 'Cure information', 200, false), sourceId: 'dm', holderName: to.name });
+      await applyStatus(db, to.id, { ...fields(d), type, cure: str(d.cureInfo, 'Cure information', 200, false), sourceId: 'dm', holderName: to.name, atk: bonus(d.atkBonus, 'Attack bonus'), heal: bonus(d.healBonus, 'Heal bonus') });
       return json({ added: true, to: to.name }, 201);
     }
     if (path === '/statuses/admin/remove') {

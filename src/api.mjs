@@ -7,6 +7,7 @@ import { handleSigns } from './signs.mjs';
 import { handleBank } from './bank.mjs';
 import { handleStatuses } from './statuses.mjs';
 import { handleQuests } from './quests.mjs';
+import { rollBonuses } from './status-core.mjs';
 const json = (body,status = 200) => new Response(JSON.stringify(body),{ status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'} });
 async function input(request) {
   if (!request.headers.get('content-type')?.startsWith('application/json')) fail('Send JSON.',415);
@@ -94,7 +95,14 @@ export async function handle(request,db,createPassword,memberPassword,bankPasswo
     if (!route && request.method === 'GET') return json({memberId:member.id,room:publicRoom(room,member)});
     if (route === 'actions' && request.method === 'POST') {
       await rate(db,'action:'+member.id,120); const command = await input(request);
-      room = await settle(db,code,await find(db,code)); const actor = authenticate(room,token); const revision = room.revision; const changed = apply(room,actor,command);
+      room = await settle(db,code,await find(db,code)); const actor = authenticate(room,token); const revision = room.revision;
+      // A roll can carry the roller's RP account token so their statuses add to it. It is looked up here, never trusted from the client.
+      let boosts = [];
+      if (command?.type === 'roll' && typeof command.itemsToken === 'string' && command.itemsToken) {
+        const who = await db.prepare('SELECT id FROM members WHERE token_hash = ?').bind(createHash('sha256').update(command.itemsToken).digest('hex')).first();
+        if (who) boosts = await rollBonuses(db,who.id);
+      }
+      const changed = apply(room,actor,command,boosts);
       if (changed && !await update(db,room,revision)) fail('The encounter changed. Review the latest state and try again.',409);
       return json({memberId:member.id,room:publicRoom(room,actor)});
     }

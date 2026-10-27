@@ -126,7 +126,7 @@ function advance(room) {
   }
   return false;
 }
-function apply(room, member, command) {
+function apply(room, member, command, boosts = []) {
   if (!command || typeof command !== 'object' || !/^[a-f0-9-]{36}$/i.test(command.actionId || '')) fail('Action identifier is required.');
   const receipt = `${member.id}:${command.actionId}`;
   if (room.receipts.includes(receipt)) return false;
@@ -173,10 +173,14 @@ function apply(room, member, command) {
       const target = room.people.find(x => x.id === p.targetId); if (!target) fail('Choose a valid target.');
       const source = actor(room);
       snapshot(room); const raw = randomInt(1, p.sides + 1), before = target.hp;
-      const bonus = bonusOf(source), total = Math.max(1, raw + bonus);   // modifiers add to the roll, which never goes below 1
+      // Statuses on the roller's RP account add to their own rolls (the server looked them up; they only count for the character the roller owns).
+      const owned = source.type === 'Player' && source.ownerId === member.id;
+      const extra = owned ? boosts.map(b => ({ label: b.label, value: p.kind === 'heal' ? b.heal : b.atk })).filter(m => m.value !== 0) : [];
+      const rolling = { mods: [...(source.mods || []), ...extra] };
+      const bonus = bonusOf(rolling), total = Math.max(1, raw + bonus);   // modifiers add to the roll, which never goes below 1
       target.hp = Math.max(0, Math.min(target.max, target.hp + (p.kind === 'heal' ? total : -total)));
-      room.lastRoll = { actorId: source.id, targetId: target.id, kind: p.kind, sides: p.sides, raw, bonus, mods: structuredClone(source.mods || []), total, applied: Math.abs(before - target.hp), before, after: target.hp };
-      log(room, `${source.name} → ${target.name}: ${p.kind === 'heal' ? 'heals' : 'attacks'} for ${room.lastRoll.applied} HP (d${p.sides}: ${raw}${bonus || source.mods?.length ? `, ${modText(source)} = ${total}` : ''}). ${before} → ${target.hp} HP.`);
+      room.lastRoll = { actorId: source.id, targetId: target.id, kind: p.kind, sides: p.sides, raw, bonus, mods: structuredClone(rolling.mods), total, applied: Math.abs(before - target.hp), before, after: target.hp };
+      log(room, `${source.name} → ${target.name}: ${p.kind === 'heal' ? 'heals' : 'attacks'} for ${room.lastRoll.applied} HP (d${p.sides}: ${raw}${bonus || rolling.mods.length ? `, ${modText(rolling)} = ${total}` : ''}). ${before} → ${target.hp} HP.`);
       if (before > 0 && target.hp === 0) {
         log(room, `${target.name} is down.`);
         if (target.loot) { room.drops.push({ personId: target.id, name: target.name, loot: target.loot }); log(room, `${target.name} dropped loot: ${target.loot}`); }
