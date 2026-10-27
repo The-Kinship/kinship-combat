@@ -7,7 +7,7 @@ import { who, str } from './items.mjs';
 const MAX_FIELDS = 6;
 const view = (m, p) => {
   let fields = []; try { fields = JSON.parse(p?.fields || '[]'); } catch { /* ignore */ }
-  return { name: m.name, portrait: p?.portrait || '', age: p?.age || '', race: p?.race || '', gender: p?.gender || '', glance: p?.glance || '', ooc: p?.ooc || '', fields };
+  return { name: m.name, displayName: p?.display_name || '', portrait: p?.portrait || '', age: p?.age || '', race: p?.race || '', gender: p?.gender || '', glance: p?.glance || '', ooc: p?.ooc || '', fields };
 };
 
 function clean(d) {
@@ -17,7 +17,7 @@ function clean(d) {
   if (!Array.isArray(list) || list.length > MAX_FIELDS) fail(`You can add up to ${MAX_FIELDS} custom fields.`);
   const fields = list.map((f, i) => ({ label: str(f?.label, `Custom field ${i + 1} title`, 24), value: str(f?.value, `Custom field ${i + 1} text`, 80, false) }));
   return {
-    portrait, fields: JSON.stringify(fields),
+    portrait, fields: JSON.stringify(fields), displayName: str(d.displayName, 'Name', 40, false),
     age: str(d.age, 'Age', 30, false), race: str(d.race, 'Race', 40, false), gender: str(d.gender, 'Gender', 30, false),
     glance: str(d.glance, 'At first glance', 500, false), ooc: str(d.ooc, 'OOC', 500, false),
   };
@@ -39,8 +39,8 @@ export async function handleProfiles(request, db, path, { json, input, rate }) {
   if (post && path === '/profile') {
     await rate(db, 'profile:' + me.id, 30);
     const c = clean(await input(request));
-    await db.prepare('INSERT INTO profiles (member_id, portrait, age, race, gender, glance, ooc, fields, updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(member_id) DO UPDATE SET portrait=excluded.portrait, age=excluded.age, race=excluded.race, gender=excluded.gender, glance=excluded.glance, ooc=excluded.ooc, fields=excluded.fields, updated_at=excluded.updated_at')
-      .bind(me.id, c.portrait, c.age, c.race, c.gender, c.glance, c.ooc, c.fields, new Date().toISOString()).run();
+    await db.prepare('INSERT INTO profiles (member_id, display_name, portrait, age, race, gender, glance, ooc, fields, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(member_id) DO UPDATE SET display_name=excluded.display_name, portrait=excluded.portrait, age=excluded.age, race=excluded.race, gender=excluded.gender, glance=excluded.glance, ooc=excluded.ooc, fields=excluded.fields, updated_at=excluded.updated_at')
+      .bind(me.id, c.displayName, c.portrait, c.age, c.race, c.gender, c.glance, c.ooc, c.fields, new Date().toISOString()).run();
     const row = await db.prepare('SELECT * FROM profiles WHERE member_id = ?').bind(me.id).first();
     return json({ profile: view(me, row) });
   }
