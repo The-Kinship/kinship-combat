@@ -45,8 +45,13 @@ export async function handleArmory(request, db, path, { json, input, rate }) {
   if (!post && path === '/armory') return json(await state(db, me));
   if (!post && path === '/armory/of') {   // anyone in the RP system can look at what another character is wearing
     const name = new URL(request.url).searchParams.get('name') || '';
-    const target = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(String(name).slice(0, 40))).first();
-    if (!target) fail('That character has not joined the RP system.', 404);
+    const key = nameKey(String(name).slice(0, 60));
+    let target = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(key).first();
+    if (!target) {   // the roster may use the full name where the RP system has a shorter one (or the other way round): accept it when exactly one member fits
+      const close = (await db.prepare('SELECT id, name, name_key FROM members').all()).results.filter(m => key.startsWith(m.name_key + ' ') || m.name_key.startsWith(key + ' '));
+      if (close.length === 1) target = close[0];
+    }
+    if (!target) fail(`Nobody is registered in the RP system as "${String(name).slice(0, 40)}". They may have registered under a different name.`, 404);
     return json({ name: target.name, ...(await state(db, target)) });
   }
   if (!post) fail('Endpoint not found.', 404);
