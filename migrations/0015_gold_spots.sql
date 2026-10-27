@@ -1,0 +1,2 @@
+ALTER TABLE `stashes` ADD COLUMN `gold` integer NOT NULL DEFAULT 0;
+ALTER TABLE `signs` ADD COLUMN `gold` integer NOT NULL DEFAULT 0;
