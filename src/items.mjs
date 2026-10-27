@@ -61,9 +61,9 @@ export const view = (row, meId) => {
 };
 export async function who(db, request) {
   const token = (request.headers.get('authorization') || '').replace(/^Bearer /, '');
-  if (!token) fail('Sign in on the Items tab first.', 401);
+  if (!token) fail('Sign in on the RP tab first.', 401);
   const row = await db.prepare('SELECT id, name, gold FROM members WHERE token_hash = ?').bind(sha(token)).first();
-  if (!row) fail('Your sign-in is no longer valid. Use your recovery code on the Items tab.', 401);
+  if (!row) fail('Your sign-in is no longer valid. Use your recovery code on the RP tab.', 401);
   return row;
 }
 // Items can hold other items: a held item is owned by 'i' + the holder's id, so it sits in nobody's inventory until released.
