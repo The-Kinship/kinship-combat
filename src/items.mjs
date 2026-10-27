@@ -8,6 +8,7 @@ import { applyStatus, checkRoom, findActive, removeByName } from './status-core.
 
 const CAPACITY = 10, MAX_MEMBERS = 300, MAX_ITEMS = 3000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
 export const CAP = CAPACITY;
+export const STACK = 10;   // identical items share a slot, up to this many per slot
 const sha = s => createHash('sha256').update(s).digest('hex');
 export const rand = n => randomBytes(n).toString('hex');
 export const nameKey = n => n.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -76,10 +77,31 @@ async function purge(db, id) {   // delete an item and anything inside it
   for (const x of ids) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
 }
 const cleanOrphans = db => db.prepare("DELETE FROM items WHERE length(owner_id) = 17 AND substr(owner_id, 1, 1) = 'i' AND substr(owner_id, 2) NOT IN (SELECT id FROM items)").run();
-export async function inventory(db, meId) {
-  const { results } = await db.prepare(ITEM_SELECT + ' WHERE i.owner_id = ? ORDER BY i.created_at, i.rowid').bind(meId).all();
-  return results.map(r => view(r, meId));
+// Stacking: every unit is still its own row, but identical units (same maker, same text, same everything) share a slot, STACK to a slot.
+// An item with things inside it never stacks. The first unit of a stack stands for it when the plugin uses, gives or stashes it.
+const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'cures', 'recipe', 'consumable', 'starts_quest'];
+const keyOf = r => r.holds > 0 ? 'id:' + r.id : JSON.stringify(KEYS.map(k => r[k] ?? ''));
+export function stacks(rows) {
+  const groups = new Map(), at = new Map(rows.map((r, i) => [r.id, i]));
+  for (const r of rows) { const k = keyOf(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+  const out = [];
+  for (const g of groups.values()) for (let i = 0; i < g.length; i += STACK) out.push(g.slice(i, i + STACK));
+  return out.sort((a, b) => at.get(a[0].id) - at.get(b[0].id));
 }
+export const stackViews = (rows, meId) => stacks(rows).map(g => ({ ...view(g[0], meId), qty: g.length }));
+export const ownerRows = async (db, owner) => (await db.prepare(ITEM_SELECT + ' WHERE i.owner_id = ? ORDER BY i.created_at, i.rowid').bind(owner).all()).results;
+export const ownerSlots = async (db, owner) => stacks(await ownerRows(db, owner)).length;
+// Would this owner still fit in cap slots after losing some units and gaining others?
+export async function fits(db, owner, cap, { remove = [], add = [] } = {}) {
+  const rows = (await ownerRows(db, owner)).filter(r => !remove.includes(r.id));
+  return stacks(rows.concat(add)).length <= cap;
+}
+export const unitRow = (db, id, owner) => db.prepare(ITEM_SELECT + ' WHERE i.id = ? AND i.owner_id = ?').bind(id, owner).first();
+export async function groupIds(db, owner, id) {
+  const rows = await ownerRows(db, owner), me = rows.find(r => r.id === id);
+  return me ? rows.filter(r => keyOf(r) === keyOf(me)).map(r => r.id) : [id];
+}
+export async function inventory(db, meId) { return stackViews(await ownerRows(db, meId), meId); }
 
 export async function handleItems(request, db, path, { json, input, rate, ip, checkCreate, checkMember }) {
   const post = request.method === 'POST';
@@ -135,11 +157,16 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
         owner = to.id; label = `${to.name}'s inventory`; cap = CAPACITY;
       }
       if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total + copies > MAX_ITEMS) fail('The item system is full.', 503);
-      const have = (await db.prepare('SELECT count(*) AS total FROM items WHERE owner_id = ?').bind(owner).first()).total;
-      if (have + copies > cap) fail(`${label} does not have room for ${copies}.`, 409);
-      for (let i = 0; i < copies; i++)
+      const made = [];
+      for (let i = 0; i < copies; i++) {
+        made.push(rand(8));
         await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, starts_quest, created_at) VALUES (?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-          .bind(rand(8), owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString()).run();
+          .bind(made[i], owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString()).run();
+      }
+      if ((await ownerSlots(db, owner)) > cap) {
+        for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
+        fail(`${label} does not have room for ${copies}.`, 409);
+      }
       return json({ granted: true, copies }, 201);
     }
     if (path === '/items/admin/delete-stash') {
@@ -189,21 +216,25 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The item system is full.', 503);
     const id = rand(8);
     const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
-      .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), me.id, CAPACITY).run();
-    if (r.meta.changes !== 1) fail(`Your inventory is full (${CAPACITY} items). Delete or give one away first.`, 409);
+      .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), me.id, CAPACITY * STACK).run();
+    if (r.meta.changes !== 1 || (await ownerSlots(db, me.id)) > CAPACITY) {
+      if (r.meta.changes === 1) await db.prepare('DELETE FROM items WHERE id = ?').bind(id).run();
+      fail(`Your inventory is full (${CAPACITY} slots). Delete or give one away first.`, 409);
+    }
     return json({ ok: true, id, items: await inventory(db, me.id) }, 201);
   }
 
   const m = path.match(/^\/items\/([a-f0-9]{16})\/(update|delete|give|use|seal|unseal|combine)$/);
   if (!m || !post) fail('Endpoint not found.', 404);
   const [, id, route] = m;
-  const item = await db.prepare('SELECT * FROM items WHERE id = ? AND owner_id = ?').bind(id, me.id).first();
+  const item = await unitRow(db, id, me.id);
   if (!item) fail('That item is not in your inventory.', 404);
 
   if (route === 'update') {
     if (item.creator_id !== me.id) fail('Only the person who made an item can change it.', 403);
     const body = await input(request), f = itemFields(body), recipe = recipeJson(body);
-    await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, id, me.id).run();
+    for (const unit of await groupIds(db, me.id, id))
+      await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
   } else if (route === 'delete') {
     await purge(db, id);
   } else if (route === 'combine') {
@@ -233,16 +264,16 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     }
   } else if (route === 'unseal') {
     if (item.creator_id !== me.id) fail('Only the person who made an item can take things out of it.', 403);
-    const held = (await db.prepare('SELECT id FROM items WHERE owner_id = ?').bind('i' + id).all()).results;
-    const have = (await db.prepare('SELECT count(*) AS total FROM items WHERE owner_id = ?').bind(me.id).first()).total;
-    if (have + held.length > CAPACITY) fail('Not enough room in your inventory to take them out.', 409);
+    const held = await ownerRows(db, 'i' + id);
+    if (!(await fits(db, me.id, CAPACITY, { add: held }))) fail('Not enough room in your inventory to take them out.', 409);
     await db.prepare('UPDATE items SET owner_id = ? WHERE owner_id = ?').bind(me.id, 'i' + id).run();
   } else if (route === 'give') {
     await rate(db, 'items-give:' + me.id, 30);
     const data = await input(request), to = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(str(data.to, 'Recipient', 40))).first();
     if (!to) fail('No member has that name.', 404);
     if (to.id === me.id) fail('That item is already yours.');
-    const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(to.id, id, me.id, to.id, CAPACITY).run();
+    if (!(await fits(db, to.id, CAPACITY, { add: [item] }))) fail(`${to.name}'s inventory is full.`, 409);
+    const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(to.id, id, me.id, to.id, CAPACITY * STACK).run();
     if (r.meta.changes !== 1) fail(`${to.name}'s inventory is full.`, 409);
   } else if (route === 'use') {
     if (!item.use_text) fail('This item has nothing to use.');
@@ -255,10 +286,12 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     const curing = item.cures ? await findActive(db, me.id, item.cures) : null;
     if (item.cures && !curing) fail(`You have no ${item.cures} to cure.`, 409);
     if (item.st_name) await checkRoom(db, me.id, item.st_name);
-    const held = (await db.prepare('SELECT id, name FROM items WHERE owner_id = ? ORDER BY created_at, id').bind('i' + id).all()).results;
+    const held = await ownerRows(db, 'i' + id);
     const eaten = item.consumable && !item.starts_quest;   // a quest letter stays until the quest is accepted
-    const have = (await db.prepare('SELECT count(*) AS total FROM items WHERE owner_id = ?').bind(me.id).first()).total;
-    if (have - (eaten ? 1 : 0) - (key && item.requires_consume ? 1 : 0) + held.length > CAPACITY) fail('Not enough room in your inventory for what is inside. Make some space first.', 409);
+    const gone = [];
+    if (eaten) gone.push(id);
+    if (key && item.requires_consume) gone.push(key.id);
+    if (!(await fits(db, me.id, CAPACITY, { remove: gone, add: held }))) fail('Not enough room in your inventory for what is inside. Make some space first.', 409);
     if (key && item.requires_consume) await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(key.id, me.id).run();
     if (held.length) await db.prepare('UPDATE items SET owner_id = ? WHERE owner_id = ?').bind(me.id, 'i' + id).run();
     if (eaten) {

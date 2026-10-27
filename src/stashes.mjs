@@ -2,7 +2,7 @@
 // Stashes: a named spot in the world that holds items. Everyone can see public ones; private ones are for the owner only.
 // Position rules (not in an instance, standing close enough) are checked by the plugin. The server keeps the data and the item rules.
 import { fail } from './engine.mjs';
-import { who, rand, str, view, inventory, CAP, ITEM_SELECT } from './items.mjs';
+import { who, rand, str, inventory, stackViews, ownerRows, stacks, fits, unitRow, CAP, STACK } from './items.mjs';
 import { amountOf, spend, earn, MAX_BALANCE } from './bank.mjs';
 
 const STASH_CAP = 20, MAX_PER_MEMBER = 3, MAX_STASHES = 300;
@@ -21,12 +21,12 @@ async function open(db, id, me) {
   return r;
 }
 async function contents(db, id, me) {
-  const { results } = await db.prepare(ITEM_SELECT + ' WHERE i.owner_id = ? ORDER BY i.created_at, i.rowid').bind('s' + id).all();
-  return results.map(r => view(r, me.id));
+  return stackViews(await ownerRows(db, 's' + id), me.id);
 }
 async function answer(json, db, id, me, status = 200) {
-  const r = await open(db, id, me);
-  return json({ stash: sv(r, me.id), stashItems: await contents(db, id, me), items: await inventory(db, me.id), capacity: CAP }, status);
+  const r = await open(db, id, me), stashItems = await contents(db, id, me);
+  r.count = stashItems.length;
+  return json({ stash: sv(r, me.id), stashItems, items: await inventory(db, me.id), capacity: CAP }, status);
 }
 
 export async function handleStashes(request, db, path, { json, input, rate }) {
@@ -34,6 +34,12 @@ export async function handleStashes(request, db, path, { json, input, rate }) {
 
   if (!post && path === '/stashes') {
     const { results } = await db.prepare(SELECT + ' WHERE s.is_private = 0 OR s.owner_id = ? ORDER BY s.zone, s.name LIMIT 300').bind(me.id).all();
+    const byStash = new Map();
+    for (const row of (await db.prepare("SELECT i.*, (SELECT count(*) FROM items c WHERE c.owner_id = 'i' || i.id) AS holds FROM items i WHERE length(i.owner_id) = 13 AND substr(i.owner_id, 1, 1) = 's' ORDER BY i.created_at, i.rowid").all()).results) {
+      if (!byStash.has(row.owner_id)) byStash.set(row.owner_id, []);
+      byStash.get(row.owner_id).push(row);
+    }
+    for (const r of results) r.count = stacks(byStash.get('s' + r.id) || []).length;
     return json({ stashes: results.map(r => sv(r, me.id)) });
   }
   if (post && path === '/stashes') {
@@ -93,17 +99,17 @@ export async function handleStashes(request, db, path, { json, input, rate }) {
   await rate(db, 'stash-move:' + me.id, 60);
   const d = await input(request), itemId = str(d.itemId, 'Item', 20), key = 's' + id;
   if (route === 'put') {
-    const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(key, itemId, me.id, key, STASH_CAP).run();
-    if (r.meta.changes !== 1) {
-      if (!(await db.prepare('SELECT id FROM items WHERE id = ? AND owner_id = ?').bind(itemId, me.id).first())) fail('That item is not in your inventory.', 404);
-      fail(`The stash is full (${STASH_CAP} items).`, 409);
-    }
+    const unit = await unitRow(db, itemId, me.id);
+    if (!unit) fail('That item is not in your inventory.', 404);
+    if (!(await fits(db, key, STASH_CAP, { add: [unit] }))) fail(`The stash is full (${STASH_CAP} slots).`, 409);
+    const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(key, itemId, me.id, key, STASH_CAP * STACK).run();
+    if (r.meta.changes !== 1) fail(`The stash is full (${STASH_CAP} slots).`, 409);
   } else {
-    const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(me.id, itemId, key, me.id, CAP).run();
-    if (r.meta.changes !== 1) {
-      if (!(await db.prepare('SELECT id FROM items WHERE id = ? AND owner_id = ?').bind(itemId, key).first())) fail('That item is not in the stash.', 404);
-      fail(`Your inventory is full (${CAP} items).`, 409);
-    }
+    const unit = await unitRow(db, itemId, key);
+    if (!unit) fail('That item is not in the stash.', 404);
+    if (!(await fits(db, me.id, CAP, { add: [unit] }))) fail(`Your inventory is full (${CAP} slots).`, 409);
+    const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(me.id, itemId, key, me.id, CAP * STACK).run();
+    if (r.meta.changes !== 1) fail(`Your inventory is full (${CAP} slots).`, 409);
   }
   return answer(json, db, id, me);
 }

@@ -3,7 +3,7 @@
 // Step types: talk (the NPC speaks), give (hand over an Advocate-made item, which is used up), receive (the NPC gives an item).
 import { fail } from './engine.mjs';
 import { randomInt } from 'node:crypto';
-import { who, rand, str, nameKey, itemFields, inventory, CAP } from './items.mjs';
+import { who, rand, str, nameKey, itemFields, inventory, ownerSlots, CAP, STACK } from './items.mjs';
 import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
 
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
@@ -68,9 +68,12 @@ function fightView(q, st, me, f, status, extra = {}) {
   return { questId: q.quest_id, npc: st.npc, playerName: me.name, playerHp: f.player_hp, playerMax: spec.playerHp, npcHp: f.npc_hp, npcMax: spec.npcHp, log: JSON.parse(f.log), status, ...extra };
 }
 async function insertGift(db, ownerId, f) {
+  const id = rand(8);
   const r = await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?")
-    .bind(rand(8), ownerId, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), ownerId, CAP).run();
-  return r.meta.changes === 1;
+    .bind(id, ownerId, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), ownerId, CAP * STACK).run();
+  if (r.meta.changes !== 1) return false;
+  if ((await ownerSlots(db, ownerId)) > CAP) { await db.prepare('DELETE FROM items WHERE id = ?').bind(id).run(); return false; }
+  return true;
 }
 
 // Moves one player past one step: checks what the step needs, hands over or takes items, and keeps first-come finds to one winner.
