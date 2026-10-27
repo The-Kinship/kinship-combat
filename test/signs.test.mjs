@@ -59,7 +59,9 @@ test('gold left at a sign is paid by the maker, taken once by the first finder, 
   assert.equal((await call('GET','/bank/me',undefined,a)).gold,40);
   assert.equal((await call('GET','/signs',undefined,b)).signs[0].gold,undefined);                  // the list does not give it away
   assert.equal((await call('GET','/signs/'+id,undefined,b)).sign.gold,60);                          // reading shows it
-  assert.equal((await call('POST',`/signs/${id}/claim`,{},a)).status,409);                           // not your own
+  const mineSign=await call('POST','/signs',{...spot,name:'Mine',description:'x',gold:5},a);
+  assert.equal((await call('POST',`/signs/${mineSign.sign.id}/claim`,{},a)).claimed,5);              // the maker can take it back
+  assert.equal((await call('GET','/bank/me',undefined,a)).gold,40);
   const got=await call('POST',`/signs/${id}/claim`,{},b);assert.equal(got.claimed,60);assert.equal((await call('GET','/bank/me',undefined,b)).gold,60);
   const late=await call('POST',`/signs/${id}/claim`,{},c);assert.equal(late.status,409);assert.equal((await call('GET','/bank/me',undefined,c)).gold,0);
   const second=await call('POST','/signs',{...spot,name:'Second',description:'x',gold:30},a);
