@@ -120,3 +120,17 @@ test('the DM can remove someone from a scene and they lose access',async t=>{
   const dmView=await call('GET',`/scenes/${s.code}?after=-1`,undefined,s.dm.token);
   assert.deepEqual(dmView.members.map(m=>m.name),['Ash','Cole']);
 });
+
+test('a popup can carry a combat room code so players get a join button',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const s=await scene(call);const [ash,bryn]=s.joined;
+  const room='ABCDEF0123456789AB';
+  db.sqlite.prepare("INSERT INTO rooms (code, revision, state, updated_at) VALUES (?,?,?,?)").run(room,0,'{}',new Date().toISOString());
+  assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'Fight!',combat:'not a code'},s.dm.token)).status,400);
+  assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'Fight!',combat:'0123456789ABCDEF01'},s.dm.token)).status,404);   // no such room
+  assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'Fight!',combat:room.toLowerCase(),to:[ash.memberId]},s.dm.token)).status,200);
+  await call('POST',`/scenes/${s.code}/send`,{text:'Plain popup'},s.dm.token);
+  const a=(await call('GET',`/scenes/${s.code}?after=0`,undefined,ash.token)).events;
+  assert.equal(a[0].combat,room);assert.equal(a[1].combat,'');
+  assert.equal((await call('GET',`/scenes/${s.code}?after=0`,undefined,bryn.token)).events.length,1);   // Bryn was not sent the code
+});
