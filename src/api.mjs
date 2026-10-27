@@ -50,13 +50,29 @@ function checkBank(supplied,expected) {
   const a = createHash('sha256').update(String(supplied ?? '')).digest(), b = createHash('sha256').update(String(expected)).digest();
   if (!timingSafeEqual(a,b)) fail('That bank password is not right.',403);
 }
+// The faction website (GitHub Pages) may call the sect pages route from the browser; nothing else is opened up to other sites.
+const SITE_ORIGINS = ['https://the-kinship.github.io'];
+const siteOrigin = (request,extras) => {
+  const origin = request.headers.get('origin'), path = new URL(request.url).pathname;
+  if (!origin || !/^\/api\/sects\//.test(path)) return null;
+  return [...SITE_ORIGINS,...String(extras.siteOrigins || '').split(',').map(x => x.trim()).filter(Boolean)].includes(origin) ? origin : null;
+};
 export async function handle(request,db,createPassword,memberPassword,bankPassword,extras = {}) {
+  const origin = siteOrigin(request,extras);
+  if (!origin) return handleInner(request,db,createPassword,memberPassword,bankPassword,extras,false);
+  const cors = { 'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type','Access-Control-Max-Age':'86400','Vary':'Origin' };
+  if (request.method === 'OPTIONS') return new Response(null,{ status:204,headers:cors });
+  const res = await handleInner(request,db,createPassword,memberPassword,bankPassword,extras,true);
+  const headers = new Headers(res.headers); for (const [k,v] of Object.entries(cors)) headers.set(k,v);
+  return new Response(res.body,{ status:res.status,headers });
+}
+async function handleInner(request,db,createPassword,memberPassword,bankPassword,extras,fromSite) {
   try {
     if (!db) fail('The encounter database is not ready. Please try again shortly.',503);
     const path = new URL(request.url).pathname.replace(/^\/api/,'');
     if (request.method === 'GET' && path === '/health') { await db.prepare('SELECT code FROM rooms LIMIT 1').first(); return json({ok:true,service:'Kinship Combat'}); }
     if (!['GET','POST'].includes(request.method)) fail('Method not allowed.',405);
-    if (request.method === 'POST') { const origin = request.headers.get('origin'); if (origin && origin !== new URL(request.url).origin) fail('This action must come from the Kinship Combat website.',403); }
+    if (request.method === 'POST') { const origin = request.headers.get('origin'); if (!fromSite && origin && origin !== new URL(request.url).origin) fail('This action must come from the Kinship Combat website.',403); }
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
     if (path === '/sects' || path.startsWith('/sects/')) return await handleSects(request,db,path,{ json,input,rate,ip,hashKey:k => createHash('sha256').update(k).digest('hex'),extras });
     if (path === '/statuses' || path.startsWith('/statuses/')) return await handleStatuses(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
