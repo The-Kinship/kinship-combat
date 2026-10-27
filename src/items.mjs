@@ -114,6 +114,28 @@ export async function groupIds(db, owner, id) {
 }
 export async function inventory(db, meId) { return stackViews(await ownerRows(db, meId), meId); }
 
+/** Deletes a member and everything of theirs (items, stashes, signs, mail to them, statuses, quest progress, profile). */
+export async function removeMemberData(db, row) {
+  await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
+  await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM signs WHERE owner_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM items WHERE owner_id = ?').bind('w' + row.id).run();   // what they were wearing
+  await db.prepare('DELETE FROM worn WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM gear_notices WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM profiles WHERE member_id = ?').bind(row.id).run();
+  await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 'm' || id FROM mails WHERE to_id = ?)").bind(row.id).run();   // mail waiting for them
+  await db.prepare('DELETE FROM mails WHERE to_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
+  await cleanOrphans(db);
+  await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM statuses WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM quest_progress WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM quest_claims WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM quest_fights WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM players WHERE id = ? AND NOT EXISTS (SELECT 1 FROM members WHERE player_id = players.id)').bind(row.player_id).run();   // a player with no characters left goes too
+}
+
 export async function handleItems(request, db, path, { json, input, rate, ip, checkCreate, checkMember }) {
   const post = request.method === 'POST';
 
@@ -122,6 +144,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     const data = await input(request); checkMember(data.memberPassword);
     const name = str(data.name, 'Your name', 40); if (name.length < 2) fail('Your name must be at least 2 characters.');
     if ((await db.prepare('SELECT count(*) AS total FROM members').first()).total >= MAX_MEMBERS) fail('The item system is full.', 503);
+    if (await db.prepare('SELECT 1 AS ok FROM bans WHERE name_key = ?').bind(nameKey(name)).first()) fail('That name cannot be registered. Please speak to an Advocate.', 403);
     if (await db.prepare('SELECT id FROM members WHERE name_key = ?').bind(nameKey(name)).first()) fail('That name is already registered. If it is yours, use your recovery code.', 409);
     // A character can join an existing player (someone's alt) by giving that player's recovery code. Otherwise they start a new player and get a code.
     let player = null;
@@ -220,24 +243,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (path === '/items/admin/remove-member') {
       const row = await db.prepare('SELECT id, player_id FROM members WHERE name_key = ?').bind(nameKey(str(data.name, 'Name', 40))).first();
       if (!row) fail('No member has that name.', 404);
-      await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
-      await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM signs WHERE owner_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM items WHERE owner_id = ?').bind('w' + row.id).run();   // what they were wearing
-      await db.prepare('DELETE FROM worn WHERE member_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM gear_notices WHERE member_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM profiles WHERE member_id = ?').bind(row.id).run();
-      await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 'm' || id FROM mails WHERE to_id = ?)").bind(row.id).run();   // mail waiting for them
-      await db.prepare('DELETE FROM mails WHERE to_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
-      await cleanOrphans(db);
-      await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM statuses WHERE member_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM quest_progress WHERE member_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM quest_claims WHERE member_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM quest_fights WHERE member_id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
-      await db.prepare('DELETE FROM players WHERE id = ? AND NOT EXISTS (SELECT 1 FROM members WHERE player_id = players.id)').bind(row.player_id).run();   // a player with no characters left goes too
+      await removeMemberData(db, row);
       return json({ removed: true });
     }
     fail('Endpoint not found.', 404);
