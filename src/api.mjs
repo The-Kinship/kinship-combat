@@ -85,7 +85,7 @@ async function handleInner(request,db,createPassword,memberPassword,bankPassword
     if (path === '/bank' || path.startsWith('/bank/')) return await handleBank(request,db,path,{ json,input,rate,ip,checkBank:supplied => checkBank(supplied,bankPassword) });
     if (path === '/duels' || path.startsWith('/duels/')) return await handleDuels(request,db,path,{ json,input,rate });
     if (path === '/reports' || path.startsWith('/reports/')) return await handleReports(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
-    if (path === '/profile' || path === '/profiles') return await handleProfiles(request,db,path,{ json,input,rate });
+    if (path === '/profile' || path === '/profiles' || path.startsWith('/profile/')) return await handleProfiles(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/armory' || path.startsWith('/armory/')) return await handleArmory(request,db,path,{ json,input,rate });
     if (path === '/mail' || path.startsWith('/mail/')) return await handleMail(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/signs' || path.startsWith('/signs/')) return await handleSigns(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });

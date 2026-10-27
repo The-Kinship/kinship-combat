@@ -3,6 +3,7 @@
 // the portrait is only a link to an image (nothing is uploaded to this server).
 import { fail } from './engine.mjs';
 import { who, str } from './items.mjs';
+import { findMember } from './lookup.mjs';
 
 const MAX_FIELDS = 6;
 const view = (m, p) => {
@@ -23,8 +24,17 @@ function clean(d) {
   };
 }
 
-export async function handleProfiles(request, db, path, { json, input, rate }) {
+export async function handleProfiles(request, db, path, { json, input, rate, ip, checkCreate }) {
   const post = request.method === 'POST';
+
+  if (post && path === '/profile/admin/clear-portrait') {   // an Advocate removes an inappropriate portrait link
+    await rate(db, 'profile-admin:' + ip, 30);
+    const d = await input(request); checkCreate(d.adminPassword);
+    const target = await findMember(db, str(d.name, 'Character name', 60));
+    if (!target) fail('Nobody is registered under that name.', 404);
+    await db.prepare("UPDATE profiles SET portrait = '' WHERE member_id = ?").bind(target.id).run();
+    return json({ cleared: true, name: target.name });
+  }
   const me = await who(db, request);
 
   if (!post && path === '/profiles') {   // everyone in the RP system, so the plugin can show a tooltip for any registered character
