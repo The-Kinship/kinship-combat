@@ -265,6 +265,14 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     for (const unit of await groupIds(db, me.id, id))
       await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, st_atk=?, st_heal=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.stAtk, f.stHeal, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
   } else if (route === 'delete') {
+    // Delete one unit, or several from the same stack (count). Units with things inside never stack, so a bigger count only applies to plain items.
+    const body = request.headers.get('content-type')?.startsWith('application/json') ? await input(request) : {};
+    const count = body.count === undefined ? 1 : body.count;
+    if (!Number.isInteger(count) || count < 1 || count > 100) fail('Choose how many, from 1 to 100.');
+    const ids = (await groupIds(db, me.id, id));
+    const units = [id, ...ids.filter(x => x !== id)].slice(0, count);
+    if (count > ids.length) fail(`You only have ${ids.length}.`, 409);
+    for (const u of units.slice(1)) await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(u, me.id).run();
     await purge(db, id);
   } else if (route === 'combine') {
     if (!item.recipe) fail('This cannot be combined with anything.');
@@ -301,9 +309,17 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     const data = await input(request), to = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(str(data.to, 'Recipient', 40))).first();
     if (!to) fail('No member has that name.', 404);
     if (to.id === me.id) fail('That item is already yours.');
-    if (!(await fits(db, to.id, CAPACITY, { add: [item] }))) fail(`${to.name}'s inventory is full.`, 409);
-    const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(to.id, id, me.id, to.id, CAPACITY * STACK).run();
-    if (r.meta.changes !== 1) fail(`${to.name}'s inventory is full.`, 409);
+    const count = data.count === undefined ? 1 : data.count;
+    if (!Number.isInteger(count) || count < 1 || count > 100) fail('Choose how many, from 1 to 100.');
+    const group = await groupIds(db, me.id, id);
+    if (count > group.length) fail(`You only have ${group.length}.`, 409);
+    const units = [id, ...group.filter(x => x !== id)].slice(0, count);
+    const rows = (await ownerRows(db, me.id)).filter(r => units.includes(r.id));
+    if (!(await fits(db, to.id, CAPACITY, { add: rows }))) fail(`${to.name}'s inventory is full.`, 409);
+    for (const u of units) {
+      const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(to.id, u, me.id, to.id, CAPACITY * STACK).run();
+      if (r.meta.changes !== 1) fail(`${to.name}'s inventory is full.`, 409);
+    }
   } else if (route === 'use') {
     if (!item.use_text) fail('This item has nothing to use.');
     let key = null;
