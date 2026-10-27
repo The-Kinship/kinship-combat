@@ -226,6 +226,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare('DELETE FROM items WHERE owner_id = ?').bind('w' + row.id).run();   // what they were wearing
       await db.prepare('DELETE FROM worn WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM gear_notices WHERE member_id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM profiles WHERE member_id = ?').bind(row.id).run();
       await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 'm' || id FROM mails WHERE to_id = ?)").bind(row.id).run();   // mail waiting for them
       await db.prepare('DELETE FROM mails WHERE to_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
