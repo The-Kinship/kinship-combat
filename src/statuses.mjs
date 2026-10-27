@@ -4,7 +4,7 @@
 import { fail } from './engine.mjs';
 import { randomInt } from 'node:crypto';
 import { who, str } from './items.mjs';
-import { applyStatus, bonus, MAX_STATUS } from './status-core.mjs';
+import { applyStatus, bonus, combatTotals, MAX_STATUS } from './status-core.mjs';
 
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
 function fields(d) {
@@ -15,6 +15,7 @@ function fields(d) {
   if (!Number.isInteger(minutes) || minutes < 0 || minutes > 43200) fail('A status can last from 1 minute to 30 days. Use 0 to last until removed.');
   return { name, description, icon, minutes, isDebuff: d.isDebuff === true };
 }
+const ICON_COMBAT = 'game:10205';
 const SELECT = 'SELECT s.*, m.name AS member_name FROM statuses s JOIN members m ON m.id = s.member_id';
 const view = (r, meId, now) => ({
   id: r.id, memberName: r.member_name, name: r.name, icon: r.icon, description: r.description, isDebuff: !!r.is_debuff,
@@ -51,7 +52,12 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
   if (!post && path === '/statuses') {
     const now = Date.now();
     const { results } = await db.prepare(SELECT + ' WHERE (s.expires_at IS NULL OR s.expires_at > ?) ORDER BY m.name_key, s.created_at LIMIT 300').bind(new Date(now).toISOString()).all();
-    return json({ statuses: results.map(r => view(r, me.id, now)), maxStatuses: MAX_STATUS });
+    // Roll bonuses from items, gear and statuses are also shown added together as one Combat Buff and one Combat Debuff.
+    const combined = (await combatTotals(db)).map(c => ({
+      id: `combat-${c.kind}-${c.memberId}`, memberName: c.name, name: c.kind === 'buff' ? 'Combat Buff' : 'Combat Debuff', icon: ICON_COMBAT, isDebuff: c.kind === 'debuff',
+      description: 'All bonuses to rolls added together: statuses, items and worn gear.', secondsLeft: null, mine: c.memberId === me.id, canRemove: false, atkBonus: c.atk, healBonus: c.heal, self: false, combined: true,
+    }));
+    return json({ statuses: results.map(r => view(r, me.id, now)).concat(combined), maxStatuses: MAX_STATUS });
   }
   if (post && path === '/statuses/self') {
     await rate(db, 'status-self:' + me.id, 20);

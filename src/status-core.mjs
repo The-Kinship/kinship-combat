@@ -15,6 +15,25 @@ export async function rollBonuses(db, memberId) {
   if (atk !== 0 || heal !== 0) out.push({ label: 'Gear', atk, heal });
   return out;
 }
+/** Everyone's roll bonuses added up for the status bar: one "Combat Buff" (all the good bonuses together) and one "Combat Debuff" (all the bad ones),
+ *  counting active statuses and worn gear (gear together capped at +5 / -5, like in rolls). Returns [{ memberId, name, kind, atk, heal }]. */
+export async function combatTotals(db) {
+  const now = new Date().toISOString(), by = new Map();
+  const slot = (id, name) => { if (!by.has(id)) by.set(id, { name, buff: { atk: 0, heal: 0 }, debuff: { atk: 0, heal: 0 } }); return by.get(id); };
+  const add = (e, atk, heal) => { for (const [k, v] of [['atk', atk], ['heal', heal]]) { if (v > 0) e.buff[k] += v; else if (v < 0) e.debuff[k] += v; } };
+  const sts = (await db.prepare('SELECT s.member_id, m.name, s.atk_bonus, s.heal_bonus FROM statuses s JOIN members m ON m.id = s.member_id WHERE (s.atk_bonus != 0 OR s.heal_bonus != 0) AND (s.expires_at IS NULL OR s.expires_at > ?)').bind(now).all()).results;
+  for (const r of sts) add(slot(r.member_id, r.name), r.atk_bonus, r.heal_bonus);
+  const gear = (await db.prepare("SELECT substr(i.owner_id, 2) AS member_id, m.name, i.gear_atk, i.gear_heal FROM items i JOIN members m ON m.id = substr(i.owner_id, 2) WHERE i.owner_id LIKE 'w%' AND (i.gear_atk != 0 OR i.gear_heal != 0) AND (i.lifespan_days = 0 OR i.worn_at IS NULL OR datetime(i.worn_at, '+' || i.lifespan_days || ' days') > datetime('now'))").all()).results;
+  const net = new Map(), cap = n => Math.max(-5, Math.min(5, n));
+  for (const g of gear) { const e = net.get(g.member_id) || { name: g.name, atk: 0, heal: 0 }; e.atk += g.gear_atk; e.heal += g.gear_heal; net.set(g.member_id, e); }
+  for (const [id, e] of net) add(slot(id, e.name), cap(e.atk), cap(e.heal));
+  const out = [];
+  for (const [memberId, e] of by) {
+    if (e.buff.atk || e.buff.heal) out.push({ memberId, name: e.name, kind: 'buff', atk: e.buff.atk, heal: e.buff.heal });
+    if (e.debuff.atk || e.debuff.heal) out.push({ memberId, name: e.name, kind: 'debuff', atk: e.debuff.atk, heal: e.debuff.heal });
+  }
+  return out;
+}
 export const statusKey = n => String(n).toLowerCase().replace(/\s+/g, ' ').trim();
 const live = '(expires_at IS NULL OR expires_at > ?)';
 
