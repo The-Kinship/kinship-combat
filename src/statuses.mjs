@@ -20,6 +20,7 @@ const view = (r, meId, now) => ({
   id: r.id, memberName: r.member_name, name: r.name, icon: r.icon, description: r.description, isDebuff: !!r.is_debuff,
   secondsLeft: r.expires_at ? Math.max(0, Math.floor((Date.parse(r.expires_at) - now) / 1000)) : null,
   mine: r.member_id === meId, canRemove: r.member_id === meId || r.source_id === meId,
+  self: r.member_id === meId && r.source_id === 'self',
 });
 
 export async function handleStatuses(request, db, path, { json, input, rate, ip, checkCreate }) {
@@ -53,7 +54,7 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
   }
   if (post && path === '/statuses/self') {
     await rate(db, 'status-self:' + me.id, 20);
-    await applyStatus(db, me.id, { ...fields(await input(request)), sourceId: me.id });
+    await applyStatus(db, me.id, { ...fields(await input(request)), sourceId: 'self' });
     return json({ added: true }, 201);
   }
   if (post && path === '/statuses/diagnose') {
