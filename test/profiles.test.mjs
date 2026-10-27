@@ -15,10 +15,10 @@ test('profiles: save, everyone can read, bad links and too many fields are refus
   const a=await join(call,'Mira Vale'),b=await join(call,'Tobin');
   assert.equal((await call('GET','/profiles')).status,401);
   let mine=await call('GET','/profile',undefined,a);assert.equal(mine.profile.name,'Mira Vale');assert.equal(mine.profile.glance,'');
-  const body={portrait:'https://i.imgur.com/abc.png',age:'27',race:'Hyur',gender:'Female',glance:'A tall woman in a grey cloak.',ooc:'Slow replies at night',fields:[{label:'Voice',value:'Soft'},{label:'Scent',value:'Pine'}]};
+  const body={displayName:'Sesen Silverborne of the Vale',portrait:'https://i.imgur.com/abc.png',age:'27',race:'Hyur',gender:'Female',glance:'A tall woman in a grey cloak.',ooc:'Slow replies at night',fields:[{label:'Voice',value:'Soft'},{label:'Scent',value:'Pine'}]};
   const saved=await call('POST','/profile',body,a);assert.equal(saved.status,200);assert.equal(saved.profile.fields.length,2);
   const all=await call('GET','/profiles',undefined,b);assert.equal(all.profiles.length,2);
-  const mira=all.profiles.find(p=>p.name==='Mira Vale');assert.equal(mira.race,'Hyur');assert.equal(mira.portrait,'https://i.imgur.com/abc.png');assert.equal(all.profiles.find(p=>p.name==='Tobin').glance,'');
+  const mira=all.profiles.find(p=>p.name==='Mira Vale');assert.equal(mira.race,'Hyur');assert.equal(mira.displayName,'Sesen Silverborne of the Vale');assert.equal(mira.name,'Mira Vale');assert.equal(mira.portrait,'https://i.imgur.com/abc.png');assert.equal(all.profiles.find(p=>p.name==='Tobin').glance,'');
   assert.equal((await call('POST','/profile',{...body,portrait:'http://x.com/a.png'},a)).status,400);
   assert.equal((await call('POST','/profile',{...body,portrait:'javascript:alert(1)'},a)).status,400);
   assert.equal((await call('POST','/profile',{...body,fields:Array.from({length:7},()=>({label:'x',value:'y'}))},a)).status,400);
