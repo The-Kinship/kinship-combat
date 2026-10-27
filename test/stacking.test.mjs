@@ -78,3 +78,14 @@ test('advocate copies stack, and a gift that cannot fit is refused whole',async 
   assert.equal((await grant(call,'Mira',{name:'New',copies:2})).status,409);
   assert.equal((await inv(call,a.token)).length,10);   // nothing half-granted
 });
+
+test('members can make several at once, and too many are refused whole',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
+  const r=await call('POST','/items',{...herb,quantity:23},a.token);assert.equal(r.status,201);
+  assert.deepEqual((await inv(call,a.token)).map(i=>i.qty),[10,10,3]);
+  for(const bad of [0,101,2.5,'5'])assert.equal((await call('POST','/items',{...herb,name:'X',quantity:bad},a.token)).status,400);
+  const over=await call('POST','/items',{...herb,name:'Big',quantity:80},a.token);assert.equal(over.status,409);   // 3 slots used, 8 more needed, only 7 left
+  assert.equal((await inv(call,a.token)).length,3);   // nothing half-made
+  assert.equal((await call('POST','/items',{...herb,name:'Fits',quantity:70},a.token)).status,201);   // exactly 7 slots
+  assert.equal((await inv(call,a.token)).length,10);
+});

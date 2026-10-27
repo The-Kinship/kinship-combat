@@ -36,7 +36,7 @@ test('herbs combine into an antidote; missing herbs and forged herbs do not work
 test('Advocates can make copies, into a member or a stash, and gifted reagents combine',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
   const herb={name:'Herb A',icon:'game:20001',with:['Herb B'],result:antidote};
-  assert.equal((await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:11})).status,400);
+  assert.equal((await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:101})).status,400);
   assert.equal((await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:0})).status,400);
   const g=await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:3});assert.equal(g.status,201);assert.equal(g.copies,3);
   {const inv=(await call('GET','/items/me',undefined,a.token)).items;assert.equal(inv.length,1);assert.equal(inv[0].qty,3);}   // identical copies share a slot
