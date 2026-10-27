@@ -1,0 +1,3 @@
+CREATE TABLE marks (id INTEGER PRIMARY KEY AUTOINCREMENT, name_key TEXT NOT NULL, name TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX marks_name ON marks (name_key);
+CREATE TABLE bans (name_key TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL);
