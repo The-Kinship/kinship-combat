@@ -13,7 +13,7 @@ async function scene(call,title='Mansion RP',players=['Ash','Bryn','Cole']){
   return {dm,joined,code:dm.code};
 }
 
-test('a DM makes a scene, players join, and only the DM sees who is in it',async t=>{
+test('a SM makes a scene, players join, and only the SM sees who is in it',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
   const s=await scene(call);
   assert.match(s.code,/^[A-F0-9]{18}$/);
@@ -58,7 +58,7 @@ test('players cannot send popups, and bad recipients or empty text are refused',
   assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'   '},s.dm.token)).status,400);
   assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'x'.repeat(301)},s.dm.token)).status,400);
   assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'hi',to:['not-a-member']},s.dm.token)).status,400);
-  assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'hi',to:[s.dm.memberId]},s.dm.token)).status,400);   // the DM is not a recipient
+  assert.equal((await call('POST',`/scenes/${s.code}/send`,{text:'hi',to:[s.dm.memberId]},s.dm.token)).status,400);   // the SM is not a recipient
 });
 
 test('two scenes run at the same time without seeing each other',async t=>{
@@ -75,7 +75,7 @@ test('two scenes run at the same time without seeing each other',async t=>{
   assert.equal((await call('POST',`/scenes/${patrol.code}/send`,{text:'sneaky'},onyx.dm.token)).status,401);
 });
 
-test('leaving removes you from the DM list, and closing deletes the scene for everyone',async t=>{
+test('leaving removes you from the SM list, and closing deletes the scene for everyone',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
   const s=await scene(call);
   assert.equal((await call('POST',`/scenes/${s.code}/leave`,{},s.joined[1].token)).left,true);
@@ -109,7 +109,7 @@ test('creating needs the creation password, but joining only needs a code',async
   assert.equal((await raw(undefined)(`/rooms/${room.room.code}/join`,{name:'Ash'})).status,201);
 });
 
-test('the DM can remove someone from a scene and they lose access',async t=>{
+test('the SM can remove someone from a scene and they lose access',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
   const s=await scene(call);const [ash,bryn]=s.joined;
   assert.equal((await call('POST',`/scenes/${s.code}/kick`,{memberId:bryn.memberId},ash.token)).status,403);

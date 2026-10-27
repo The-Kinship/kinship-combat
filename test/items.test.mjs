@@ -76,7 +76,7 @@ test('a recovery code gets you back in and signs the old device out',async t=>{
   assert.equal((await call('GET','/items/me',undefined,back.token)).items.length,1);
 });
 
-test('DMs can list and delete items and remove members, with the creation password only',async t=>{
+test('SMs can list and delete items and remove members, with the creation password only',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
   const a=await join(call,'Mira');await call('POST','/items',cookie,a.token);
   assert.equal((await call('POST','/items/admin/list',{adminPassword:'fcpass'})).status,403);
@@ -88,7 +88,7 @@ test('DMs can list and delete items and remove members, with the creation passwo
   assert.equal((await call('POST','/items/admin/list',{adminPassword:'dmpass'})).items.length,0);
 });
 
-test('a DM can gift an item straight into a member inventory, and the gift cannot be edited',async t=>{
+test('a SM can gift an item straight into a member inventory, and the gift cannot be edited',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
   assert.equal((await call('POST','/items/admin/grant',{...cookie,to:'Mira',adminPassword:'fcpass'})).status,403);
   assert.equal((await call('POST','/items/admin/grant',{...cookie,to:'Nobody',adminPassword:'dmpass'})).status,404);
@@ -99,7 +99,7 @@ test('a DM can gift an item straight into a member inventory, and the gift canno
   const list=await call('POST','/items/admin/list',{adminPassword:'dmpass'});assert.equal(list.items.length,0);
   for(let i=0;i<10;i++)await call('POST','/items/admin/grant',{...cookie,name:'G'+i,to:'Mira',adminPassword:'dmpass'});
   assert.equal((await call('POST','/items/admin/grant',{...cookie,to:'Mira',adminPassword:'dmpass'})).status,409);
-  assert.equal((await call('POST','/items/admin/list',{adminPassword:'dmpass'})).items[0].creator,'(DM gift)');
+  assert.equal((await call('POST','/items/admin/list',{adminPassword:'dmpass'})).items[0].creator,'(SM gift)');
 });
 
 test('locked box: needs a key in your inventory, can hold other items, key can be used up',async t=>{

@@ -7,7 +7,7 @@ import { handle } from '../src/api.mjs';
 function database(){const sqlite=new DatabaseSync(':memory:');sqlite.exec(fs.readFileSync(new URL('../migrations/0001_init.sql',import.meta.url),'utf8'));return {sqlite,prepare(sql){const statement=sqlite.prepare(sql);let args=[];return {bind(...values){args=values;return this},async first(){return statement.get(...args)||null},async run(){return {meta:{changes:Number(statement.run(...args).changes)}}}}}}}
 function client(db){return async(path,data,token)=>{const response=await handle(new Request('https://kinship.test/api'+path,{method:data===undefined?'GET':'POST',headers:{...(data===undefined?{}:{'Content-Type':'application/json','Origin':'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(path==='/rooms'&&data.createPassword===undefined?{...data,createPassword:'letmein'}:data)}),db,'letmein');return {status:response.status,...await response.json()}}}
 
-// Builds a room with a DM and one joined player, adds the cast, applies settings, and (optionally) starts.
+// Builds a room with a SM and one joined player, adds the cast, applies settings, and (optionally) starts.
 async function scene(t,{kind='classic',minutes,cast,start=true}={}){
   const db=database();t.after(()=>db.sqlite.close());const call=client(db);
   const dm=await call('/rooms',{name:'Mira',encounter:'Test fight'}),code=dm.room.code;
@@ -44,7 +44,7 @@ test('rooms never expose tokens, and players cannot see undropped loot',async t=
 test('rolling uses your turn: the next character is up and you cannot roll twice',async t=>{
   const c=await scene(t,{cast:[{name:'Hero',type:'Player',hp:50},{name:'Treant',type:'NPC',hp:50},{name:'Fern',type:'NPC',hp:50}]});
   assert.equal(c.room.people[c.room.order.indexOf(c.room.order[c.room.index])].name,'Hero');
-  assert.equal((await c.act('roll',{kind:'attack',targetId:c.person('Treant').id,sides:20},'dm')).status,403);   // DM cannot roll for the player
+  assert.equal((await c.act('roll',{kind:'attack',targetId:c.person('Treant').id,sides:20},'dm')).status,403);   // SM cannot roll for the player
   const first=await c.act('roll',{kind:'attack',targetId:c.person('Treant').id,sides:20},'player');
   assert.equal(first.status,200);
   const state=(await c.view()).room;
@@ -65,7 +65,7 @@ test('classic: defeating every NPC ends the fight with a summary, loot and the O
   assert.equal((await hit(c,'Boss','player')).status,200);
   assert.equal((await c.view()).room.phase,'combat');                    // one NPC is still up
   assert.ok((await c.view()).room.drops.some(d=>d.loot==='large sword'));
-  await c.act('next','dm'==='dm'?{}:{});                                 // DM moves past Goblin's turn order slot if needed
+  await c.act('next','dm'==='dm'?{}:{});                                 // SM moves past Goblin's turn order slot if needed
   let room=(await c.view()).room;
   // keep passing until it is the Hero's turn again, then finish the Goblin
   for(let i=0;i<6&&room.people.find(p=>p.id===room.order[room.index]).name!=='Hero';i++){await c.act('next',{});room=(await c.view()).room}
@@ -76,8 +76,8 @@ test('classic: defeating every NPC ends the fight with a summary, loot and the O
   assert.equal(room.result.headline,'Victory for the Players!');
   assert.deepEqual(room.result.winners,['Hero']);
   assert.deepEqual(room.result.loot.map(l=>l.loot).sort(),['12 gold','large sword']);
-  assert.equal(room.result.note,'((Loot will be distributed by the DM in game after the encounter.))');
-  // nothing more can happen, nobody new can join, only the DM can close
+  assert.equal(room.result.note,'((Loot will be distributed by the SM in game after the encounter.))');
+  // nothing more can happen, nobody new can join, only the SM can close
   assert.equal((await c.act('next',{})).status,400);
   assert.equal((await c.call(`/rooms/${c.code}/join`,{name:'Late'})).status,400);
   assert.equal((await c.call(`/rooms/${c.code}/close`,{},c.tok.player)).status,403);
@@ -133,7 +133,7 @@ test('timed encounters end on the clock and the side with more HP wins',async t=
   assert.equal((await c.act('undo',{})).status,400);
 });
 
-test('healing a downed character takes back their loot drop, and the DM can undo an ending',async t=>{
+test('healing a downed character takes back their loot drop, and the SM can undo an ending',async t=>{
   const c=await scene(t,{cast:[{name:'Hero',type:'Player',hp:5,max:20},{name:'Boss',type:'NPC',hp:1,loot:'large sword'},{name:'Guard',type:'NPC',hp:1,loot:'12 gold'}]});
   await hit(c,'Boss','player');
   assert.equal((await c.view()).room.drops.length,1);
@@ -176,7 +176,7 @@ test('rooms untouched for a week are cleared when a new room is made',async t=>{
   assert.equal((await c.view()).status,404);
 });
 
-test('DM modifiers add to every roll, stack, and never push a roll below 1',async t=>{
+test('SM modifiers add to every roll, stack, and never push a roll below 1',async t=>{
   const c=await scene(t,{start:false,cast:[{name:'Hero',type:'Player',hp:50,mods:[{label:'Sword',value:5},{label:'Sick',value:-2}]},{name:'Treant',type:'NPC',hp:500}]});
   assert.deepEqual(c.person('Hero').mods,[{label:'Sword',value:5},{label:'Sick',value:-2}]);
   assert.equal((await c.view('player')).room.people.find(p=>p.name==='Hero').mods.length,2);   // everyone can see them
@@ -187,7 +187,7 @@ test('DM modifiers add to every roll, stack, and never push a roll below 1',asyn
   assert.match(r.room.log.find(l=>l.message.includes("HP (d")).message,new RegExp(`d4: ${lr.raw}, \\+5 Sword, -2 Sick = ${lr.total}\\)`));
 });
 
-test('a big penalty is floored at 1, only the DM can set modifiers, and only before the fight',async t=>{
+test('a big penalty is floored at 1, only the SM can set modifiers, and only before the fight',async t=>{
   const c=await scene(t,{start:false,cast:[{name:'Hero',type:'Player',hp:50,mods:[{label:'Cursed',value:-50}]},{name:'Treant',type:'NPC',hp:500}]});
   const hero=c.person('Hero');
   assert.equal((await c.act('participant',{...hero,mods:[{label:'Cheat',value:9}]},'player')).status,403);
