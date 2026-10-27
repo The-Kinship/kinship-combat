@@ -50,3 +50,13 @@ just resets at 00:00 UTC; nothing is lost.
 ## Good to know
 - Rooms are capped at 500 total and 40 people each (set in `src/api.mjs`).
 - The old site and this one have separate rooms; they do not share data.
+
+
+## Sect passwords (secrets)
+
+The sect passwords and the sect page content stay on the server. Add two secrets in Cloudflare (Workers & Pages > kinship-combat > Settings > Variables and Secrets):
+
+- `SECT_PASSWORDS`: JSON, for example `{"onyx":"a long phrase","iron":"...","life":"...","ember":"...","crypt":"..."}`. Capitals and spaces at the ends don't matter when members type them.
+- `SECT_CONTENT_URL`: the secret "publish to web" CSV link of the sect content sheet (a separate Google Sheet that nothing else links to).
+
+Changing a password in `SECT_PASSWORDS` makes everyone enter it again, because their remembered entry stops working.
