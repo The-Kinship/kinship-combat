@@ -17,7 +17,7 @@ const SELECT = 'SELECT m.*, f.name AS from_name, t.name AS to_name FROM mails m 
 
 async function brief(db, r, me) {
   const slots = stacks(await attached(db, r.id)).length;
-  return { id: r.id, from: fromName(r, me.id), to: r.to_name || '(removed)', subject: r.subject, anonymous: !!r.anonymous, gold: r.gold, slots, unread: r.to_id === me.id && !r.read_at, returned: !!r.returned, sentAt: r.sent_at, expiresAt: r.expires_at };
+  return { id: r.id, from: fromName(r, me.id), to: r.to_name || '(removed)', subject: r.subject, look: r.look || '', anonymous: !!r.anonymous, gold: r.gold, slots, unread: r.to_id === me.id && !r.read_at, returned: !!r.returned, sentAt: r.sent_at, expiresAt: r.expires_at };
 }
 
 /** Anything attached goes back to the sender: gold to their purse (no cap) and items deleted if they cannot hold them is avoided by the caller checking fits first. */
@@ -80,7 +80,7 @@ export async function handleMail(request, db, path, { json, input, rate, ip, che
   if (post && path === '/mail') {
     await rate(db, 'mail-send:' + me.id, 20);
     const d = await input(request);
-    const toName = str(d.to, 'Who it is for', 40), subject = str(d.subject, 'Subject', 60), body = str(d.body, 'Message', 1500, false);
+    const toName = str(d.to, 'Who it is for', 40), subject = str(d.subject, 'Subject', 60), body = str(d.body, 'Message', 1500, false), look = str(d.look, 'Description', 60, false);
     const to = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(toName)).first();
     if (!to) fail('No member has that name.', 404);
     if (to.id === me.id) fail('You cannot send mail to yourself.');
@@ -103,8 +103,8 @@ export async function handleMail(request, db, path, { json, input, rate, ip, che
     if (!(await fits(db, 'mail-check', SLOTS, { add: rows }))) fail(`A mail can carry up to ${SLOTS} different items.`, 409);
     const id = rand(6), now = Date.now();
     if (gold > 0 && !(await spend(db, me.id, gold, `Mail to ${to.name}`))) fail('You do not have that much gold.', 409);
-    await db.prepare('INSERT INTO mails (id, from_id, to_id, subject, body, anonymous, gold, returned, sent_at, expires_at) VALUES (?,?,?,?,?,?,?,0,?,?)')
-      .bind(id, me.id, to.id, subject, body, d.anonymous === true ? 1 : 0, gold, iso(now), iso(now + DAY * DAYS)).run();
+    await db.prepare('INSERT INTO mails (id, from_id, to_id, subject, body, anonymous, gold, returned, sent_at, expires_at, look) VALUES (?,?,?,?,?,?,?,0,?,?,?)')
+      .bind(id, me.id, to.id, subject, body, d.anonymous === true ? 1 : 0, gold, iso(now), iso(now + DAY * DAYS), look).run();
     for (const u of taken) {
       const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ?').bind('m' + id, u, me.id).run();
       if (r.meta.changes !== 1) { await bounce(db, { id, from_id: me.id, gold }, 'Mail could not be sent'); fail('Something changed while sending. Nothing was sent.', 409); }
