@@ -89,3 +89,25 @@ test('members can make several at once, and too many are refused whole',async t=
   assert.equal((await call('POST','/items',{...herb,name:'Fits',quantity:70},a.token)).status,201);   // exactly 7 slots
   assert.equal((await inv(call,a.token)).length,10);
 });
+
+test('give and delete can take some of a stack, or all of it',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await join(call,'Sesen'),b=await join(call,'Kael');
+  await grant(call,'Sesen',{copies:8});
+  let mine=await inv(call,a.token);assert.equal(mine[0].qty,8);
+  for(const bad of [0,101,1.5,'2'])assert.equal((await call('POST',`/items/${mine[0].id}/give`,{to:'Kael',count:bad},a.token)).status,400);
+  assert.equal((await call('POST',`/items/${mine[0].id}/give`,{to:'Kael',count:9},a.token)).status,409);   // only has 8
+  assert.equal((await call('POST',`/items/${mine[0].id}/give`,{to:'Kael',count:3},a.token)).status,200);
+  mine=await inv(call,a.token);assert.equal(mine[0].qty,5);
+  assert.equal((await inv(call,b.token))[0].qty,3);
+  assert.equal((await call('POST',`/items/${mine[0].id}/give`,{to:'Kael'},a.token)).status,200);          // no count still means one
+  mine=await inv(call,a.token);assert.equal(mine[0].qty,4);
+  assert.equal((await call('POST',`/items/${mine[0].id}/delete`,{count:2},a.token)).status,200);
+  mine=await inv(call,a.token);assert.equal(mine[0].qty,2);
+  assert.equal((await call('POST',`/items/${mine[0].id}/delete`,{count:5},a.token)).status,409);
+  assert.equal((await call('POST',`/items/${mine[0].id}/delete`,{count:2},a.token)).status,200);
+  assert.equal((await inv(call,a.token)).length,0);
+  assert.equal((await inv(call,b.token))[0].qty,4);
+  assert.equal((await call('POST',`/items/${(await inv(call,b.token))[0].id}/delete`,{},b.token)).status,200);   // old plugins send an empty body: one unit
+  assert.equal((await inv(call,b.token))[0].qty,3);
+});
