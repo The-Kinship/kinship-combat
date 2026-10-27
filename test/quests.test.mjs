@@ -85,9 +85,15 @@ test('look, listen and search steps happen at a spot, and a first-come find goes
   await act(a.token,'listen');
   let r=await act(a.token,'search');assert.equal(r.results[0].gained[0],'Rusty key');assert.equal(r.items.length,1);
   r=await act(b.token,'search');assert.equal(r.results[0].ok,false);assert.match(r.results[0].text,/first/);assert.equal(r.items.length,0);
-  assert.equal((await call('GET','/quests/mine',undefined,b.token)).quests[0].step,2);          // loser stays put
-  const list=await admin('list',{});assert.equal(list.quests[0].claims[0].name,'Mira');
-  await admin('reset-claims',{questId:id});
+  assert.equal(r.results[0].failed,true);
+  const failedQ=(await call('GET','/quests/mine',undefined,b.token)).quests[0];assert.equal(failedQ.failed,true);assert.equal(failedQ.done,false);   // the loser's quest has failed
+  assert.equal((await act(b.token,'search')).results.length,0);                                   // and no longer reacts
+  assert.equal((await call('POST','/quests/abandon',{questId:id},a.token)).status,409);              // an active or finished quest can't be deleted
+  const list=await admin('list',{});assert.equal(list.quests[0].claims[0].name,'Mira');assert.equal(list.quests[0].players.find(p=>p.name==='Kael').failed,true);
+  assert.equal((await call('POST','/quests/abandon',{questId:id},b.token)).status,200);              // the loser deletes it
+  assert.equal((await call('GET','/quests/mine',undefined,b.token)).quests.length,0);
+  await admin('reset-claims',{questId:id});await admin('assign',{questId:id,to:'Kael'});
+  for(const type of ['look','listen'])await act(b.token,type);
   r=await act(b.token,'search');assert.equal(r.results[0].gained[0],'Rusty key');
   assert.equal((await call('POST','/quests/talk',{npc:'Old Maren'},a.token)).results[0].finished,true);
 });
@@ -197,4 +203,17 @@ test('a fight at a spot starts by standing there, needs its status, and a full b
   const junk=(await call('GET','/items/me',undefined,a.token)).items[0];await call('POST',`/items/${junk.id}/delete`,{},a.token);
   r=await call('POST','/quests/fight/attack',{questId:id},a.token);assert.equal(r.fight.status,'won');assert.equal(r.fight.result.gained[0],'Loot');
   assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].done,true);
+});
+
+test('winning a fight for a once-only reward someone already took fails the quest',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  const id=(await admin('save',{title:'Crown',steps:[{type:'fight',npc:'Wight',text:'It falls.',fight:{npcHp:1,npcDie:2,playerHp:99,playerDie:2,playerBonus:5},gift:{name:'Crown',icon:'game:20001'},once:true}]})).id;
+  for(const n of ['Mira','Kael'])await admin('assign',{questId:id,to:n});
+  for(const tok of [a.token,b.token])await call('POST','/quests/fight/start',{npc:'Wight'},tok);
+  let r=await call('POST','/quests/fight/attack',{questId:id},a.token);assert.equal(r.fight.status,'won');
+  r=await call('POST','/quests/fight/attack',{questId:id},b.token);
+  assert.equal(r.fight.status,'failed');assert.match(r.fight.result.text,/failed/);
+  assert.equal((await call('GET','/quests/mine',undefined,b.token)).quests[0].failed,true);
+  assert.equal(db.sqlite.prepare('SELECT count(*) AS n FROM quest_fights WHERE member_id != ?').get('x').n,0);
 });
