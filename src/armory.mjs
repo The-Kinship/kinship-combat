@@ -2,7 +2,8 @@
 // Armory: wearable items. A worn item is owned by 'w' + the wearer's id, so it is out of the bag and cannot be given, stashed or mailed.
 // Gear can break: the timer starts the first time it is worn and keeps running. Broken gear becomes a plain "Broken" item.
 import { fail } from './engine.mjs';
-import { who, str, nameKey, view, ownerRows, fits, unitRow, inventory, CAP } from './items.mjs';
+import { findMember } from './lookup.mjs';
+import { who, str, view, ownerRows, fits, unitRow, inventory, CAP } from './items.mjs';
 
 export const SLOTS = ['helm', 'chest', 'cloak', 'legs', 'feet', 'ring1', 'ring2', 'necklace', 'weapon'];
 export const BROKEN_TEXT = 'It seems to be broken and holds no use anymore.';
@@ -45,12 +46,7 @@ export async function handleArmory(request, db, path, { json, input, rate }) {
   if (!post && path === '/armory') return json(await state(db, me));
   if (!post && path === '/armory/of') {   // anyone in the RP system can look at what another character is wearing
     const name = new URL(request.url).searchParams.get('name') || '';
-    const key = nameKey(String(name).slice(0, 60));
-    let target = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(key).first();
-    if (!target) {   // the roster may use the full name where the RP system has a shorter one (or the other way round): accept it when exactly one member fits
-      const close = (await db.prepare('SELECT id, name, name_key FROM members').all()).results.filter(m => key.startsWith(m.name_key + ' ') || m.name_key.startsWith(key + ' '));
-      if (close.length === 1) target = close[0];
-    }
+    const target = await findMember(db, name);
     if (!target) fail(`Nobody is registered in the RP system as "${String(name).slice(0, 40)}". They may have registered under a different name.`, 404);
     return json({ name: target.name, ...(await state(db, target)) });
   }
