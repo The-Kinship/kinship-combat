@@ -4,8 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
-function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
-const mk=db=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass');return {status:r.status,...await r.json()}};
+function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
+const mk=db=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
 const spot={name:'Tree carving',description:'This tree seems to have marks carved into it. On closer inspection it reads "Help me".\nThe letters are fresh.',zone:'Mist',territory:339,map:72,x:10.5,y:2,z:-30.25,mapX:11.2,mapY:9.8};
 async function join(call,name){const r=await call('POST','/items/register',{name,memberPassword:'fcpass'});assert.equal(r.status,201);return r}
 
@@ -44,4 +44,27 @@ test('only the maker edits or deletes; advocates can delete with the creation pa
   assert.equal((await call('GET','/signs',undefined,a.token)).signs.length,0);
   const own=(await call('POST','/signs',spot,a.token)).sign;
   assert.equal((await call('POST',`/signs/${own.id}/delete`,{},a.token)).status,200);
+});
+
+test('gold left at a sign is paid by the maker, taken once by the first finder, and returned if the sign is deleted',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const reg=async n=>{const r=await call('POST','/items/register',{name:n,memberPassword:'fcpass'});return r.token};
+  const a=await reg('Mira'),b=await reg('Kael'),c=await reg('Rune');
+  const mint=(to,amount)=>call('POST','/bank/admin/mint',{bankPassword:'bankpass',to,amount});
+  const spot={territory:339,map:72,x:1,y:2,z:3,mapX:5,mapY:6,zone:'Mist'};
+  assert.equal((await call('POST','/signs',{...spot,name:'Treasure',description:'Dig here',gold:50},a)).status,409);   // not enough gold
+  await mint('Mira',100);
+  assert.equal((await call('POST','/signs',{...spot,name:'Treasure',description:'Dig here',gold:-5},a)).status,400);
+  const made=await call('POST','/signs',{...spot,name:'Treasure',description:'Dig here',gold:60},a);assert.equal(made.status,201);const id=made.sign.id;
+  assert.equal((await call('GET','/bank/me',undefined,a)).gold,40);
+  assert.equal((await call('GET','/signs',undefined,b)).signs[0].gold,undefined);                  // the list does not give it away
+  assert.equal((await call('GET','/signs/'+id,undefined,b)).sign.gold,60);                          // reading shows it
+  assert.equal((await call('POST',`/signs/${id}/claim`,{},a)).status,409);                           // not your own
+  const got=await call('POST',`/signs/${id}/claim`,{},b);assert.equal(got.claimed,60);assert.equal((await call('GET','/bank/me',undefined,b)).gold,60);
+  const late=await call('POST',`/signs/${id}/claim`,{},c);assert.equal(late.status,409);assert.equal((await call('GET','/bank/me',undefined,c)).gold,0);
+  const second=await call('POST','/signs',{...spot,name:'Second',description:'x',gold:30},a);
+  await call('POST',`/signs/${second.sign.id}/delete`,{},a);assert.equal((await call('GET','/bank/me',undefined,a)).gold,40);   // refunded
+  const third=await call('POST','/signs',{...spot,name:'Third',description:'x',gold:10},a);
+  assert.equal((await call('POST','/signs/admin/delete',{adminPassword:'dmpass',signId:third.sign.id})).status,200);
+  assert.equal((await call('GET','/bank/me',undefined,a)).gold,40);
 });
