@@ -8,7 +8,12 @@ export const MAX_STATUS = 6;
 export const bonus = (v, name) => { if (v === undefined || v === null || v === '') return 0; if (!Number.isInteger(v) || v < -5 || v > 5) fail(`${name} must be a whole number from -5 to 5.`); return v; };
 export async function rollBonuses(db, memberId) {
   const { results } = await db.prepare('SELECT name, atk_bonus, heal_bonus FROM statuses WHERE member_id = ? AND (atk_bonus != 0 OR heal_bonus != 0) AND (expires_at IS NULL OR expires_at > ?)').bind(memberId, new Date().toISOString()).all();
-  return results.map(r => ({ label: r.name, atk: r.atk_bonus, heal: r.heal_bonus }));
+  const out = results.map(r => ({ label: r.name, atk: r.atk_bonus, heal: r.heal_bonus }));
+  // Worn gear counts too, but all of it together is capped at +5 / -5 so no outfit makes anyone unbeatable.
+  const gear = (await db.prepare("SELECT gear_atk, gear_heal FROM items WHERE owner_id = ? AND (gear_atk != 0 OR gear_heal != 0) AND (lifespan_days = 0 OR worn_at IS NULL OR datetime(worn_at, '+' || lifespan_days || ' days') > datetime('now'))").bind('w' + memberId).all()).results;
+  const cap = n => Math.max(-5, Math.min(5, n)), atk = cap(gear.reduce((n, g) => n + g.gear_atk, 0)), heal = cap(gear.reduce((n, g) => n + g.gear_heal, 0));
+  if (atk !== 0 || heal !== 0) out.push({ label: 'Gear', atk, heal });
+  return out;
 }
 export const statusKey = n => String(n).toLowerCase().replace(/\s+/g, ' ').trim();
 const live = '(expires_at IS NULL OR expires_at > ?)';

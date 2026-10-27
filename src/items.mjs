@@ -8,6 +8,7 @@ import { applyStatus, bonus, checkRoom, findActive, removeByName } from './statu
 
 const CAPACITY = 10, MAX_MEMBERS = 300, MAX_PER_PLAYER = 10, MAX_ITEMS = 3000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
 export const CAP = CAPACITY;
+export const WEAR_SLOTS = ['', 'helm', 'chest', 'cloak', 'legs', 'feet', 'ring', 'necklace', 'weapon'];
 export const STACK = 10;   // identical items share a slot, up to this many per slot
 const sha = s => createHash('sha256').update(s).digest('hex');
 export const rand = n => randomBytes(n).toString('hex');
@@ -39,9 +40,14 @@ export function itemFields(data, allowBonus = false) {
   const stCure = str(data.stCure, 'Cure information', 200, false);
   const stAtk = allowBonus && stName ? bonus(data.stAtk, 'Attack bonus') : 0, stHeal = allowBonus && stName ? bonus(data.stHeal, 'Heal bonus') : 0;   // only Advocates can give a status a roll bonus
   const startsQuest = str(data.startsQuest, 'Quest', 20, false);
+  const wearSlot = data.wearSlot === undefined || data.wearSlot === null ? '' : data.wearSlot;
+  if (!WEAR_SLOTS.includes(wearSlot)) fail('Choose where the item is worn, or leave it as not wearable.');
+  const lifespanDays = wearSlot && Number.isInteger(data.lifespanDays) ? data.lifespanDays : 0;
+  if (lifespanDays < 0 || lifespanDays > 365) fail('Gear can last from 1 to 365 days. Use 0 for gear that never breaks.');
+  const gearAtk = allowBonus && wearSlot ? bonus(data.gearAtk, 'Gear attack bonus') : 0, gearHeal = allowBonus && wearSlot ? bonus(data.gearHeal, 'Gear heal bonus') : 0;   // only Advocates can give gear a roll bonus
   const icon = str(data.icon, 'Icon', 80);
   if (!ICON.test(icon)) fail('Choose an icon for the item.');
-  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
+  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, wearSlot, lifespanDays, gearAtk, gearHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
 }
 // A reagent can name up to three other items it combines with, and say what they make. Stored as JSON: { with: [names], result: itemFields }.
 function recipeJson(data, allowBonus = false) {
@@ -59,6 +65,7 @@ const asView = f => ({ name: f.name, icon: f.icon, description: f.description, f
 export const view = (row, meId) => {
   const mine = row.creator_id === meId && row.owner_id === meId;
   const v = { id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine, canCombine: !!row.recipe, requires: row.requires || '', requiresConsume: !!row.requires_consume, holds: row.holds || 0 };
+  if (row.wear_slot) { v.wearSlot = row.wear_slot; v.gearAtk = row.gear_atk || 0; v.gearHeal = row.gear_heal || 0; v.lifespanDays = row.lifespan_days || 0; v.wornAt = row.worn_at || ''; v.breaksAt = row.worn_at && row.lifespan_days ? new Date(Date.parse(row.worn_at) + row.lifespan_days * 86400000).toISOString() : ''; }
   if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.combineFail = r.failChance || 0; v.result = asView(r.result); } }
   return v;
 };
@@ -79,10 +86,11 @@ async function purge(db, id) {   // delete an item and anything inside it
   }
   for (const x of ids) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
 }
+const setGear = (db, id, f) => f.wearSlot ? db.prepare('UPDATE items SET wear_slot=?, gear_atk=?, gear_heal=?, lifespan_days=? WHERE id=?').bind(f.wearSlot, f.gearAtk, f.gearHeal, f.lifespanDays, id).run() : null;
 const cleanOrphans = db => db.prepare("DELETE FROM items WHERE length(owner_id) = 17 AND substr(owner_id, 1, 1) = 'i' AND substr(owner_id, 2) NOT IN (SELECT id FROM items)").run();
 // Stacking: every unit is still its own row, but identical units (same maker, same text, same everything) share a slot, STACK to a slot.
 // An item with things inside it never stacks. The first unit of a stack stands for it when the plugin uses, gives or stashes it.
-const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'st_atk', 'st_heal', 'cures', 'recipe', 'consumable', 'starts_quest'];
+const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'st_atk', 'st_heal', 'wear_slot', 'gear_atk', 'gear_heal', 'lifespan_days', 'worn_at', 'cures', 'recipe', 'consumable', 'starts_quest'];
 const keyOf = r => r.holds > 0 ? 'id:' + r.id : JSON.stringify(KEYS.map(k => r[k] ?? ''));
 export function stacks(rows) {
   const groups = new Map(), at = new Map(rows.map((r, i) => [r.id, i]));
@@ -186,6 +194,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
         made.push(rand(8));
         await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, starts_quest, created_at, st_atk, st_heal) VALUES (?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
           .bind(made[i], owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString(), f.stAtk, f.stHeal).run();
+        await setGear(db, made[i], f);
       }
       if ((await ownerSlots(db, owner)) > cap) {
         for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
@@ -214,6 +223,9 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
       await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM signs WHERE owner_id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM items WHERE owner_id = ?').bind('w' + row.id).run();   // what they were wearing
+      await db.prepare('DELETE FROM worn WHERE member_id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM gear_notices WHERE member_id = ?').bind(row.id).run();
       await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 'm' || id FROM mails WHERE to_id = ?)").bind(row.id).run();   // mail waiting for them
       await db.prepare('DELETE FROM mails WHERE to_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
@@ -249,7 +261,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const id = rand(8);
       const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at, st_atk, st_heal) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
         .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), f.stAtk, f.stHeal, me.id, CAPACITY * STACK).run();
-      if (r.meta.changes === 1) made.push(id); else break;
+      if (r.meta.changes === 1) { made.push(id); await setGear(db, id, f); } else break;
     }
     if (made.length < qty || (await ownerSlots(db, me.id)) > CAPACITY) {
       for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
@@ -270,6 +282,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     const body = await input(request), f = itemFields(body), recipe = recipeJson(body);
     for (const unit of await groupIds(db, me.id, id))
       await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, st_atk=?, st_heal=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.stAtk, f.stHeal, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
+    await db.prepare('UPDATE items SET wear_slot=?, gear_atk=?, gear_heal=?, lifespan_days=? WHERE id=? AND owner_id=? AND worn_at IS NULL').bind(f.wearSlot, f.gearAtk, f.gearHeal, f.lifespanDays, unit, me.id).run();   // gear settings can't change once it has been worn
   } else if (route === 'delete') {
     // Delete one unit, or several from the same stack (count). Units with things inside never stack, so a bigger count only applies to plain items.
     const body = request.headers.get('content-type')?.startsWith('application/json') ? await input(request) : {};
