@@ -48,3 +48,26 @@ test('Advocates can make copies, into a member or a stash, and gifted reagents c
   const done=await call('POST',`/items/${herbA.id}/combine`,{},a.token);assert.equal(done.status,200);assert.equal(done.combined,'Antidote');
   assert.equal((await call('POST','/items/admin/grant',{name:'X',icon:'game:20001',adminPassword:'dmpass',stashId:'nope'})).status,404);
 });
+
+test('a recipe can have a chance to fail, which uses everything up and makes nothing',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
+  const result={name:'Elixir',icon:'game:20002',description:''};
+  for(const bad of [100,-1,2.5,'5'])assert.equal((await call('POST','/items',{name:'Root',icon:'game:20001',with:['Sap'],result,failChance:bad},a.token)).status,400);
+  const root=await call('POST','/items',{name:'Root',icon:'game:20001',with:['Sap'],result,failChance:99},a.token);assert.equal(root.status,201);
+  let r=await call('GET','/items/me',undefined,a.token);assert.equal(r.items[0].combineFail,99);
+  let failed=0;
+  for(let i=0;i<15&&!failed;i++){
+    const sap=await call('POST','/items',{name:'Sap',icon:'game:20001'},a.token);assert.equal(sap.status,201);
+    const rootId=(await call('GET','/items/me',undefined,a.token)).items.find(x=>x.name==='Root').id;
+    const c=await call('POST',`/items/${rootId}/combine`,{},a.token);assert.equal(c.status,200,JSON.stringify(c));
+    if(c.failed){failed++;assert.deepEqual(c.used.sort(),['Root','Sap']);assert.equal(c.items.length,0);}   // both gone, nothing made
+    else{assert.equal(c.combined,'Elixir');await call('POST',`/items/${c.items[0].id}/delete`,{},a.token);await call('POST','/items',{name:'Root',icon:'game:20001',with:['Sap'],result,failChance:99},a.token);}
+  }
+  assert.equal(failed,1);
+  // no failChance means it always works
+  const safe=await call('POST','/items',{name:'Safe',icon:'game:20001',with:['Sap'],result},a.token);assert.equal(safe.status,201);
+  assert.equal((await call('GET','/items/me',undefined,a.token)).items.find(x=>x.name==='Safe').combineFail,0);
+  await call('POST','/items',{name:'Sap',icon:'game:20001'},a.token);
+  const sid=(await call('GET','/items/me',undefined,a.token)).items.find(x=>x.name==='Safe').id;
+  assert.equal((await call('POST',`/items/${sid}/combine`,{},a.token)).combined,'Elixir');
+});
