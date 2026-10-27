@@ -1,7 +1,7 @@
 'use strict';
 // RP items: members register once (name + member password), create items, hold up to CAPACITY, give them away, and use them.
 // Items never touch the game. They only exist inside the plugin.
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { fail } from './engine.mjs';
 import { earn } from './bank.mjs';
 import { applyStatus, bonus, checkRoom, findActive, removeByName } from './status-core.mjs';
@@ -51,13 +51,15 @@ function recipeJson(data, allowBonus = false) {
   if (new Set(keys).size !== keys.length) fail('List each reagent once.');
   if (keys.includes(nameKey(String(data.name ?? '')))) fail('An item cannot be combined with another one of itself.');
   if (!data.result || typeof data.result !== 'object' || Array.isArray(data.result)) fail('Say what the combination makes.');
-  return JSON.stringify({ with: names, result: itemFields(data.result, allowBonus) });
+  const failChance = data.failChance === undefined || data.failChance === null ? 0 : data.failChance;
+  if (!Number.isInteger(failChance) || failChance < 0 || failChance > 99) fail('The chance of failing must be a whole number from 0 to 99.');
+  return JSON.stringify({ with: names, result: itemFields(data.result, allowBonus), failChance });
 }
 const asView = f => ({ name: f.name, icon: f.icon, description: f.description, flavor: f.flavor, useLabel: f.useLabel, useText: f.useText, consumable: !!f.consumable, requires: f.requires, requiresConsume: !!f.requiresConsume, stName: f.stName, stDesc: f.stDesc, stIcon: f.stIcon, stDebuff: !!f.stDebuff, stMinutes: f.stMinutes, stType: f.stType, stCure: f.stCure, stAtk: f.stAtk, stHeal: f.stHeal, cures: f.cures });
 export const view = (row, meId) => {
   const mine = row.creator_id === meId && row.owner_id === meId;
   const v = { id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine, canCombine: !!row.recipe, requires: row.requires || '', requiresConsume: !!row.requires_consume, holds: row.holds || 0 };
-  if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.result = asView(r.result); } }
+  if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.combineFail = r.failChance || 0; v.result = asView(r.result); } }
   return v;
 };
 export async function who(db, request) {
@@ -286,6 +288,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (missing.length) fail(`You still need ${missing.join(missing.length > 2 ? ', ' : ' and ')} to combine this.`, 409);
     if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS + picked.length) fail('The RP system is full.', 503);
     for (const p of picked) await purge(db, p.id);
+    // Some recipes can fail: everything put in is used up and nothing is made.
+    if (recipe.failChance > 0 && randomInt(100) < recipe.failChance) return json({ failed: true, used: picked.map(p => p.name), items: await inventory(db, me.id) });
     await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at, st_atk, st_heal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .bind(rand(8), me.id, item.creator_id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), f.stAtk || 0, f.stHeal || 0).run();
     return json({ combined: f.name, used: picked.map(p => p.name), items: await inventory(db, me.id) });
