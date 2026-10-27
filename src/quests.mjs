@@ -58,7 +58,7 @@ function steps(list) {
 const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? ORDER BY p.updated_at';
 function mineView(r) {
   const list = JSON.parse(r.steps), cur = r.done ? null : list[r.step];
-  return { questId: r.quest_id, title: r.title, intro: r.intro, step: r.step, total: list.length, done: !!r.done,
+  return { questId: r.quest_id, title: r.title, intro: r.intro, step: r.step, total: list.length, done: r.done === 1, failed: r.done === 2,
     current: cur ? { type: cur.type, npc: cur.npc, item: cur.item || '', hint: cur.hint, place: cur.place || null } : null };
 }
 const rollDie = (sides, bonus) => { const raw = 1 + randomInt(sides); return { raw, total: Math.max(1, raw + bonus) }; };
@@ -89,7 +89,10 @@ async function runStep(db, me, r, list, st) {
   let won = false;
   if (st.once && st.gift) {
     const w = await db.prepare('INSERT INTO quest_claims (quest_id, step, member_id, created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING').bind(r.quest_id, r.step, me.id, now).run();
-    if (w.meta.changes !== 1) return stop('Someone else got here first. There is nothing left to find.');
+    if (w.meta.changes !== 1) {
+      await db.prepare('UPDATE quest_progress SET done = 2, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ? AND done = 0').bind(now, me.id, r.quest_id, r.step).run();
+      return { quest: r.title, ok: false, failed: true, text: 'Someone else got here first, and there is nothing left to find. This quest has failed.', finished: false, gained: [] };
+    }
     won = true;
   }
   const undo = async () => { await revert(); if (won) await db.prepare('DELETE FROM quest_claims WHERE quest_id = ? AND step = ? AND member_id = ?').bind(r.quest_id, r.step, me.id).run(); };
@@ -119,7 +122,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       const prog = (await db.prepare('SELECT p.quest_id, p.step, p.done, m.name FROM quest_progress p JOIN members m ON m.id = p.member_id ORDER BY m.name_key').all()).results;
       const claims = (await db.prepare('SELECT c.quest_id, c.step, m.name FROM quest_claims c LEFT JOIN members m ON m.id = c.member_id').all()).results;
       return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text,
-        players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: !!p.done })),
+        players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: p.done === 1, failed: p.done === 2 })),
         claims: claims.filter(c => c.quest_id === q.id).map(c => ({ step: c.step, name: c.name || '(removed)' })) })) });
     }
     if (path === '/quests/admin/save') {
@@ -130,7 +133,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
         const r = await db.prepare('UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=? WHERE id=?').bind(title, intro, JSON.stringify(list), startPlace, startText, id).run();
         if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
         // A shorter quest finishes anyone who was past the new end.
-        await db.prepare('UPDATE quest_progress SET done = 1 WHERE quest_id = ? AND step >= ?').bind(id, list.length).run();
+        await db.prepare('UPDATE quest_progress SET done = 1 WHERE quest_id = ? AND done = 0 AND step >= ?').bind(id, list.length).run();
         return json({ saved: true, id });
       }
       if ((await db.prepare('SELECT count(*) AS total FROM quests').first()).total >= MAX_QUESTS) fail('There are too many quests. Delete one first.', 409);
@@ -209,6 +212,10 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
         await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).run();
         return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'won', { result: line }), items: await inventory(db, me.id) });
       }
+      if (line && line.failed) {
+        await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).run();
+        return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'failed', { result: line }) });
+      }
       await db.prepare('UPDATE quest_fights SET log = ?, updated_at = ? WHERE member_id = ? AND quest_id = ?').bind(JSON.stringify(log.slice(-8)), now, me.id, row.quest_id).run();
       return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'blocked', { result: line }) });
     };
@@ -227,6 +234,16 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     }
     await db.prepare('UPDATE quest_fights SET player_hp = ?, npc_hp = ?, log = ?, updated_at = ? WHERE member_id = ? AND quest_id = ?').bind(f.player_hp, f.npc_hp, JSON.stringify(log.slice(-8)), now, me.id, row.quest_id).run();
     return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'active') });
+  }
+
+  // A failed quest (someone else took a once-only find) can be deleted. Finished and active quests cannot, so rewards can't be repeated.
+  if (post && path === '/quests/abandon') {
+    await rate(db, 'quest-abandon:' + me.id, 30);
+    const id = str((await input(request)).questId, 'Quest', 20);
+    const r = await db.prepare('DELETE FROM quest_progress WHERE member_id = ? AND quest_id = ? AND done = 2').bind(me.id, id).run();
+    if (r.meta.changes !== 1) fail('Only a failed quest can be deleted.', 409);
+    await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, id).run();
+    return json({ deleted: true });
   }
 
   // Spots where a quest can be picked up. Only the place goes out, never the quest's name or what it says.
