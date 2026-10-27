@@ -145,7 +145,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
         if (!(await db.prepare('SELECT id FROM quests WHERE id = ?').bind(f.startsQuest).first())) fail('That quest no longer exists.', 404);
       }
       const copies = data.copies === undefined ? 1 : data.copies;
-      if (!Number.isInteger(copies) || copies < 1 || copies > 10) fail('Copies must be a whole number from 1 to 10.');
+      if (!Number.isInteger(copies) || copies < 1 || copies > 100) fail('Copies must be a whole number from 1 to 100.');
       let owner, label, cap;
       if (data.stashId) {
         const stash = await db.prepare('SELECT id, name FROM stashes WHERE id = ?').bind(str(data.stashId, 'Stash', 20)).first();
@@ -214,13 +214,21 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     await rate(db, 'items-create:' + me.id, 30);
     const body = await input(request), f = itemFields(body), recipe = recipeJson(body);
     if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The item system is full.', 503);
-    const id = rand(8);
-    const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
-      .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), me.id, CAPACITY * STACK).run();
-    if (r.meta.changes !== 1 || (await ownerSlots(db, me.id)) > CAPACITY) {
-      if (r.meta.changes === 1) await db.prepare('DELETE FROM items WHERE id = ?').bind(id).run();
-      fail(`Your inventory is full (${CAPACITY} slots). Delete or give one away first.`, 409);
+    const qty = body.quantity === undefined ? 1 : body.quantity;
+    if (!Number.isInteger(qty) || qty < 1 || qty > 100) fail('Quantity must be a whole number from 1 to 100.');
+    if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total + qty > MAX_ITEMS) fail('The item system is full.', 503);
+    const made = [];
+    for (let n = 0; n < qty; n++) {
+      const id = rand(8);
+      const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
+        .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), me.id, CAPACITY * STACK).run();
+      if (r.meta.changes === 1) made.push(id); else break;
     }
+    if (made.length < qty || (await ownerSlots(db, me.id)) > CAPACITY) {
+      for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
+      fail(`Your inventory is full: there is no room for ${qty === 1 ? 'that' : qty + ' of them'} (${CAPACITY} slots, ${STACK} to a slot). Delete or give something away first.`, 409);
+    }
+    const id = made[0];
     return json({ ok: true, id, items: await inventory(db, me.id) }, 201);
   }
 
