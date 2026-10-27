@@ -152,3 +152,49 @@ test('a quest can start from an Advocate-made item or a spot, with an offer that
   const fake=await call('POST','/items',{name:'Fake',icon:'game:20001',useLabel:'Read',useText:'x',startsQuest:id},a.token);const fk=fake.items.find(i=>i.id===fake.id);
   const u=await call('POST',`/items/${fk.id}/use`,{},a.token);assert.equal(u.offer,null);
 });
+
+test('a fight step runs on the server: the enemy swings back, winning gives the reward, losing lets you try again',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  assert.equal((await admin('save',{title:'X',steps:[{type:'fight',npc:'Guard',text:'t',fight:{npcHp:0}}]})).status,400);
+  assert.equal((await admin('save',{title:'X',steps:[{type:'fight',npc:'Guard',text:'t',fight:{npcDie:1}}]})).status,400);
+  const id=(await admin('save',{title:'The Keys',steps:[
+    {type:'fight',npc:'Gate Guard',text:'The guard drops the keys.',fight:{npcHp:10,npcDie:4,npcBonus:1,playerHp:50,playerDie:6,playerBonus:2},gift:{name:'Gate keys',icon:'game:20001'},once:true},
+    {type:'talk',npc:'Old Maren',text:'Well done.'}]})).id;
+  await admin('assign',{questId:id,to:'Mira'});
+  assert.equal((await call('POST','/quests/talk',{npc:'Gate Guard'},a.token)).results.length,0);       // talking never skips the fight
+  assert.equal((await call('POST','/quests/fight/start',{npc:'Someone Else'},a.token)).fight,null);
+  assert.equal((await call('POST','/quests/fight/attack',{questId:id},a.token)).fight,null);            // nothing started yet
+  let r=await call('POST','/quests/fight/start',{npc:'gate  guard'},a.token);
+  assert.equal(r.fight.status,'active');assert.equal(r.fight.npcHp,10);assert.equal(r.fight.playerHp,50);assert.equal(r.fight.playerName,'Mira');
+  const again=await call('POST','/quests/fight/start',{npc:'Gate Guard'},a.token);assert.equal(again.fight.npcHp,10);   // resuming never resets
+  let rounds=0;while(r.fight.status==='active'&&rounds<50){r=await call('POST','/quests/fight/attack',{questId:id},a.token);rounds++;}
+  assert.equal(r.fight.status,'won');assert.ok(r.fight.log.some(l=>/goes down/.test(l)));
+  assert.equal(r.fight.result.gained[0],'Gate keys');assert.equal(r.items[0].name,'Gate keys');
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,1);
+  assert.equal(db.sqlite.prepare('SELECT count(*) AS n FROM quest_fights').get().n,0);
+  // losing: a hopeless player
+  const id2=(await admin('save',{title:'Doomed',steps:[{type:'fight',npc:'Ogre',text:'win',fight:{npcHp:999,npcDie:20,npcBonus:50,playerHp:5,playerDie:2,playerBonus:0}}]})).id;
+  await admin('assign',{questId:id2,to:'Mira'});
+  r=await call('POST','/quests/fight/start',{npc:'Ogre'},a.token);rounds=0;while(r.fight.status==='active'&&rounds<20){r=await call('POST','/quests/fight/attack',{questId:id2},a.token);rounds++}
+  assert.equal(r.fight.status,'lost');assert.equal(r.fight.playerHp,0);
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests.find(q=>q.questId===id2).step,0);   // still on the step
+  r=await call('POST','/quests/fight/start',{npc:'Ogre'},a.token);assert.equal(r.fight.playerHp,5);assert.equal(r.fight.npcHp,999);     // a fresh try
+});
+
+test('a fight at a spot starts by standing there, needs its status, and a full bag holds the reward without losing the win',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  const id=(await admin('save',{title:'Ambush',steps:[{type:'fight',npc:'Bandit',text:'He yields.',place:spot,needs:'Armed',needText:'You have no weapon.',fight:{npcHp:1,npcDie:2,playerHp:99,playerDie:2,playerBonus:5},gift:{name:'Loot',icon:'game:20001'}}]})).id;
+  await admin('assign',{questId:id,to:'Mira'});
+  assert.equal((await call('POST','/quests/fight/start',{territory:1},a.token)).fight,null);              // wrong zone
+  let r=await call('POST','/quests/fight/start',{territory:339},a.token);assert.equal(r.fight,null);assert.equal(r.text,'You have no weapon.');
+  await call('POST','/statuses/self',{name:'Armed',icon:'game:10205',description:''},a.token);
+  r=await call('POST','/quests/fight/start',{territory:339},a.token);assert.equal(r.fight.status,'active');
+  for(let i=0;i<10;i++)await call('POST','/items',{name:'Junk'+i,icon:'game:20001'},a.token);
+  r=await call('POST','/quests/fight/attack',{questId:id},a.token);
+  assert.equal(r.fight.status,'blocked');assert.match(r.fight.result.text,/full/);assert.equal(r.fight.npcHp,0);
+  const junk=(await call('GET','/items/me',undefined,a.token)).items[0];await call('POST',`/items/${junk.id}/delete`,{},a.token);
+  r=await call('POST','/quests/fight/attack',{questId:id},a.token);assert.equal(r.fight.status,'won');assert.equal(r.fight.result.gained[0],'Loot');
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].done,true);
+});
