@@ -21,11 +21,11 @@ test('send mail with gold and items, read it, collect it, delete it',async t=>{
   assert.equal((await call('POST','/mail',{to:'Mira',subject:'Hi'},a)).status,400);                 // not to yourself
   assert.equal((await call('POST','/mail',{to:'Kael',subject:'Hi',gold:500},a)).status,409);        // not enough gold
   assert.equal((await call('POST','/mail',{to:'Kael',subject:'Hi',items:[{itemId:it.id,count:5}]},a)).status,409);
-  const sent=await call('POST','/mail',{to:'Kael',subject:'A gift',body:'For you.',gold:40,items:[{itemId:it.id,count:2}],anonymous:true},a);assert.equal(sent.status,201);
+  const sent=await call('POST','/mail',{to:'Kael',subject:'A gift',look:'A pretty wrapped giftbox',body:'For you.',gold:40,items:[{itemId:it.id,count:2}],anonymous:true},a);assert.equal(sent.status,201);
   assert.equal((await call('GET','/bank/me',undefined,a)).gold,60);
   assert.equal((await call('GET','/items/me',undefined,a)).items[0].qty,1);
   assert.deepEqual(await call('GET','/mail/count',undefined,b).then(r=>[r.total,r.unread]),[1,1]);
-  const list=await call('GET','/mail',undefined,b);assert.equal(list.inbox.length,1);assert.equal(list.inbox[0].from,'Anonymous');assert.equal(list.inbox[0].gold,40);assert.equal(list.inbox[0].slots,1);assert.equal(list.inbox[0].unread,true);
+  const list=await call('GET','/mail',undefined,b);assert.equal(list.inbox.length,1);assert.equal(list.inbox[0].from,'Anonymous');assert.equal(list.inbox[0].gold,40);assert.equal(list.inbox[0].look,'A pretty wrapped giftbox');assert.equal(list.inbox[0].slots,1);assert.equal(list.inbox[0].unread,true);
   const sentList=await call('GET','/mail',undefined,a);assert.equal(sentList.outbox.length,1);
   const one=await call('GET','/mail/'+sent.id,undefined,b);assert.equal(one.mail.body,'For you.');assert.equal(one.mail.items[0].qty,2);
   assert.equal((await call('GET','/mail/'+sent.id,undefined,a)).status,403);                         // the sender cannot read it as the recipient
