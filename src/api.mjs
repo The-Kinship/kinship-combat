@@ -7,6 +7,7 @@ import { handleSigns } from './signs.mjs';
 import { handleBank } from './bank.mjs';
 import { handleStatuses } from './statuses.mjs';
 import { handleQuests } from './quests.mjs';
+import { handleSects } from './sects.mjs';
 import { rollBonuses } from './status-core.mjs';
 const json = (body,status = 200) => new Response(JSON.stringify(body),{ status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'} });
 async function input(request) {
@@ -49,7 +50,7 @@ function checkBank(supplied,expected) {
   const a = createHash('sha256').update(String(supplied ?? '')).digest(), b = createHash('sha256').update(String(expected)).digest();
   if (!timingSafeEqual(a,b)) fail('That bank password is not right.',403);
 }
-export async function handle(request,db,createPassword,memberPassword,bankPassword) {
+export async function handle(request,db,createPassword,memberPassword,bankPassword,extras = {}) {
   try {
     if (!db) fail('The encounter database is not ready. Please try again shortly.',503);
     const path = new URL(request.url).pathname.replace(/^\/api/,'');
@@ -57,6 +58,7 @@ export async function handle(request,db,createPassword,memberPassword,bankPasswo
     if (!['GET','POST'].includes(request.method)) fail('Method not allowed.',405);
     if (request.method === 'POST') { const origin = request.headers.get('origin'); if (origin && origin !== new URL(request.url).origin) fail('This action must come from the Kinship Combat website.',403); }
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    if (path === '/sects' || path.startsWith('/sects/')) return await handleSects(request,db,path,{ json,input,rate,ip,hashKey:k => createHash('sha256').update(k).digest('hex'),extras });
     if (path === '/statuses' || path.startsWith('/statuses/')) return await handleStatuses(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/quests' || path.startsWith('/quests/')) return await handleQuests(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/bank' || path.startsWith('/bank/')) return await handleBank(request,db,path,{ json,input,rate,ip,checkBank:supplied => checkBank(supplied,bankPassword) });

@@ -7,7 +7,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-      return handle(request, env.DB, env.CREATE_PASSWORD, env.MEMBER_PASSWORD, env.BANK_PASSWORD);
+      return handle(request, env.DB, env.CREATE_PASSWORD, env.MEMBER_PASSWORD, env.BANK_PASSWORD, { sectPasswords: env.SECT_PASSWORDS, sectContentUrl: env.SECT_CONTENT_URL });
     }
     if (url.pathname === '/' || url.pathname === '/table' || url.pathname === '/table/') {
       return Response.redirect(url.origin + '/table/index.html' + url.search, 302);
