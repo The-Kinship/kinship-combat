@@ -92,3 +92,18 @@ test('anyone can look at what another character is wearing',async t=>{
   assert.equal((await call('GET','/armory/of?name=Mira')).status,401);
   const full=await call('GET','/armory/of?name='+encodeURIComponent('Mira Silverborne'),undefined,b);assert.equal(full.status,200);assert.equal(full.name,'Mira');   // roster uses the longer name
 });
+
+test('all roll bonuses show added together as one Combat Buff and one Combat Debuff',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  await grant(call,'Mira',{name:'Blade',wearSlot:'weapon',gearAtk:2,gearHeal:-1});
+  await call('POST','/statuses/admin/add',{adminPassword:'dmpass',to:'Mira',name:'Blessed',icon:'game:10001',atkBonus:1,healBonus:2});
+  await call('POST','/statuses/admin/add',{adminPassword:'dmpass',to:'Mira',name:'Sluggish',icon:'game:10001',atkBonus:-1});
+  let list=(await call('GET','/statuses',undefined,a)).statuses.filter(s=>s.memberName==='Mira'&&s.id.startsWith('combat-'));
+  assert.deepEqual(list.map(s=>[s.name,s.atkBonus,s.healBonus]),[['Combat Buff',1,2],['Combat Debuff',-1,0]]);      // gear not worn yet
+  for(const i of (await call('GET','/items/me',undefined,a)).items)await call('POST','/armory/equip',{itemId:i.id},a);
+  list=(await call('GET','/statuses',undefined,b)).statuses.filter(s=>s.memberName==='Mira'&&s.id.startsWith('combat-'));
+  const buff=list.find(s=>s.name==='Combat Buff'),debuff=list.find(s=>s.name==='Combat Debuff');
+  assert.deepEqual([buff.atkBonus,buff.healBonus,buff.isDebuff,buff.mine,buff.canRemove],[3,2,false,false,false]);   // +2 gear and +1 status
+  assert.deepEqual([debuff.atkBonus,debuff.healBonus,debuff.isDebuff],[-1,-1,true]);
+  assert.equal((await call('GET','/statuses',undefined,b)).statuses.filter(s=>s.memberName==='Kael'&&s.id.startsWith('combat-')).length,0);   // nothing for people without bonuses
+});
