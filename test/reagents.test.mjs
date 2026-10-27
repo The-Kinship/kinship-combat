@@ -39,11 +39,10 @@ test('Advocates can make copies, into a member or a stash, and gifted reagents c
   assert.equal((await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:11})).status,400);
   assert.equal((await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:0})).status,400);
   const g=await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:3});assert.equal(g.status,201);assert.equal(g.copies,3);
-  assert.equal((await call('GET','/items/me',undefined,a.token)).items.length,3);
-  assert.equal((await call('POST','/items/admin/grant',{...herb,adminPassword:'dmpass',to:'Mira',copies:8})).status,409);   // 3 + 8 > 10
+  {const inv=(await call('GET','/items/me',undefined,a.token)).items;assert.equal(inv.length,1);assert.equal(inv[0].qty,3);}   // identical copies share a slot
   const st=(await call('POST','/stashes',{name:'Herb patch',zone:'Mist',territory:339,map:72,x:1,y:1,z:1,mapX:1,mapY:1},a.token)).stash;
   assert.equal((await call('POST','/items/admin/grant',{name:'Herb B',icon:'game:20001',adminPassword:'dmpass',stashId:st.id,copies:5})).status,201);
-  assert.equal((await call('GET',`/stashes/${st.id}`,undefined,a.token)).stashItems.length,5);
+  assert.equal((await call('GET',`/stashes/${st.id}`,undefined,a.token)).stashItems[0].qty,5);
   const hb=(await call('POST',`/stashes/${st.id}/take`,{itemId:(await call('GET',`/stashes/${st.id}`,undefined,a.token)).stashItems[0].id},a.token)).items;
   const herbA=hb.find(i=>i.name==='Herb A');assert.equal(herbA.canCombine,true);assert.equal(herbA.combineWith,undefined);   // only the maker sees the recipe
   const done=await call('POST',`/items/${herbA.id}/combine`,{},a.token);assert.equal(done.status,200);assert.equal(done.combined,'Antidote');
