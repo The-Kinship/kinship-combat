@@ -154,7 +154,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     await rate(db, 'items-admin:' + ip, 30);
     const data = await input(request); checkCreate(data.adminPassword);
     if (path === '/items/admin/list') {
-      const { results } = await db.prepare("SELECT i.id, i.name, i.icon, i.description, i.creator_id, COALESCE(o.name, 'Stash: ' || st.name, 'Inside: ' || b.name) AS owner, c.name AS creator FROM items i LEFT JOIN members o ON o.id = i.owner_id LEFT JOIN stashes st ON 's' || st.id = i.owner_id LEFT JOIN items b ON 'i' || b.id = i.owner_id LEFT JOIN members c ON c.id = i.creator_id ORDER BY i.created_at DESC LIMIT 300").all();
+      const { results } = await db.prepare("SELECT i.id, i.name, i.icon, i.description, i.creator_id, COALESCE(o.name, 'Stash: ' || st.name, 'Inside: ' || b.name, CASE WHEN ml.id IS NOT NULL THEN 'In the mail: ' || ml.subject END) AS owner, c.name AS creator FROM items i LEFT JOIN members o ON o.id = i.owner_id LEFT JOIN stashes st ON 's' || st.id = i.owner_id LEFT JOIN items b ON 'i' || b.id = i.owner_id LEFT JOIN mails ml ON 'm' || ml.id = i.owner_id LEFT JOIN members c ON c.id = i.creator_id ORDER BY i.created_at DESC LIMIT 300").all();
       const members = (await db.prepare('SELECT name FROM members ORDER BY name_key').all()).results.map(m => m.name);
       const stashes = (await db.prepare("SELECT s.id, s.name, s.zone, s.is_private, m.name AS owner, (SELECT count(*) FROM items WHERE owner_id = 's' || s.id) AS count FROM stashes s LEFT JOIN members m ON m.id = s.owner_id ORDER BY s.created_at DESC LIMIT 300").all()).results
         .map(r => ({ id: r.id, name: r.name, zone: r.zone, owner: r.owner || '(removed)', isPrivate: !!r.is_private, count: r.count }));
@@ -214,6 +214,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
       await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM signs WHERE owner_id = ?').bind(row.id).run();
+      await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 'm' || id FROM mails WHERE to_id = ?)").bind(row.id).run();   // mail waiting for them
+      await db.prepare('DELETE FROM mails WHERE to_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM items WHERE owner_id = ? OR creator_id = ?').bind(row.id, row.id).run();
       await cleanOrphans(db);
       await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
