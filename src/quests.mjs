@@ -3,6 +3,17 @@
 // Step types: talk (the NPC speaks), give (hand over an Advocate-made item, which is used up), receive (the NPC gives an item).
 import { fail } from './engine.mjs';
 import { who, rand, str, nameKey, itemFields, inventory, CAP } from './items.mjs';
+import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
+
+const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
+function grant(g, at) {
+  if (!g || typeof g !== 'object') fail(`${at} status is not valid.`);
+  const icon = str(g.icon, `${at} status icon`, 80);
+  if (!ICON.test(icon)) fail('Choose an icon for the status.');
+  const minutes = g.minutes === undefined || g.minutes === null ? 0 : g.minutes;
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > 43200) fail('A status can last from 1 minute to 30 days. Use 0 to last until removed.');
+  return { name: str(g.name, `${at} status name`, 30), description: str(g.description, `${at} status description`, 200, false), icon, minutes, isDebuff: g.isDebuff === true };
+}
 
 const MAX_QUESTS = 60, MAX_STEPS = 12, MAX_ACTIVE = 15;
 const TYPES = ['talk', 'give', 'receive', 'look', 'listen', 'search'];
@@ -23,6 +34,9 @@ function steps(list) {
     const spot = SPOT.includes(s.type);
     const out = { type: s.type, npc: spot ? '' : str(s.npc, `${at} character name`, 40), text: str(s.text, `${at} text`, 600), hint: str(s.hint, `${at} hint`, 150, false) };
     if (spot) out.place = place(s.place);
+    const needs = str(s.needs, `${at} required status`, 30, false);
+    if (needs) { out.needs = needs; out.needText = str(s.needText, `${at} message when missing`, 200, false); out.takesNeeded = s.takesNeeded === true; }
+    if (s.grants) out.grants = grant(s.grants, at);
     if (s.type === 'give') out.item = str(s.item, `${at} item to hand over`, 40);
     if (s.type === 'receive' && (!s.gift || typeof s.gift !== 'object')) fail(`${at} needs an item to give.`);
     if ((s.type === 'receive' || s.type === 'search') && s.gift && typeof s.gift === 'object') {
@@ -51,6 +65,8 @@ async function runStep(db, me, r, list, st) {
   const claim = () => db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ?').bind(last ? 1 : 0, now, me.id, r.quest_id, r.step).run();
   const revert = () => db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, me.id, r.quest_id).run();
   let held = null, gained = [];
+  if (st.needs && !(await findActive(db, me.id, st.needs))) return stop(st.needText || 'You are not ready for this yet.');
+  if (st.grants) { try { await checkRoom(db, me.id, st.grants.name); } catch (e) { if (e.status) return stop(e.message); throw e; } }
   if (st.type === 'give') {
     held = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND creator_id = 'dm' AND lower(name) = ? LIMIT 1").bind(me.id, st.item.toLowerCase()).first();
     if (!held) return stop(`${st.npc} is waiting for something. You don't have it.`);
@@ -71,7 +87,10 @@ async function runStep(db, me, r, list, st) {
     if (!(await insertGift(db, me.id, st.gift))) { await undo(); return stop('Your inventory is full. Make room, then try again.'); }
     gained = [st.gift.name];
   }
-  return { quest: r.title, ok: true, text: st.text, finished: last, gained };
+  if (st.needs && st.takesNeeded) await removeByName(db, me.id, st.needs);
+  let statusGained = '';
+  if (st.grants) { await applyStatus(db, me.id, { ...st.grants, sourceId: 'dm' }); statusGained = st.grants.name; }
+  return { quest: r.title, ok: true, text: st.text, finished: last, gained, statusGained };
 }
 
 export async function handleQuests(request, db, path, { json, input, rate, ip, checkCreate }) {
