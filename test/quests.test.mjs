@@ -91,3 +91,32 @@ test('look, listen and search steps happen at a spot, and a first-come find goes
   r=await act(b.token,'search');assert.equal(r.results[0].gained[0],'Rusty key');
   assert.equal((await call('POST','/quests/talk',{npc:'Old Maren'},a.token)).results[0].finished,true);
 });
+
+test('a step can need a status, use it up, and give one; a full status list stops it without losing the step',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  const blessed={name:'Blessed',icon:'game:10205',description:'A warm glow.',minutes:20};
+  assert.equal((await admin('save',{title:'X',steps:[{type:'talk',npc:'P',text:'t',grants:{...blessed,icon:'nope'}}]})).status,400);
+  assert.equal((await admin('save',{title:'X',steps:[{type:'talk',npc:'P',text:'t',grants:{...blessed,minutes:-5}}]})).status,400);
+  const id=(await admin('save',{title:'Blessing',steps:[
+    {type:'talk',npc:'Priest',text:'Kneel. You are blessed.',grants:blessed},
+    {type:'talk',npc:'Guard',text:'Pass, blessed one.',needs:'Blessed',needText:'The guard sneers at you.',takesNeeded:true},
+    {type:'talk',npc:'Priest',text:'Done.'}]})).id;
+  await admin('assign',{questId:id,to:'Mira'});
+  const talk=n=>call('POST','/quests/talk',{npc:n},a.token);
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].current.needs,undefined);
+  for(let i=0;i<5;i++)await call('POST','/statuses/self',{name:'S'+i,icon:'game:10205',description:''},a.token);
+  await call('POST','/statuses/self',{name:'S5',icon:'game:10205',description:''},a.token);                    // now at the limit of six
+  let r=await talk('Priest');assert.equal(r.results[0].ok,false);assert.match(r.results[0].text,/6 statuses/);
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,0);
+  const mine=(await call('GET','/statuses',undefined,a.token)).statuses.find(s=>s.name==='S5');await call('POST',`/statuses/${mine.id}/remove`,{},a.token);
+  r=await talk('Priest');assert.equal(r.results[0].ok,true);assert.equal(r.results[0].statusGained,'Blessed');
+  const have=(await call('GET','/statuses',undefined,a.token)).statuses.find(s=>s.name==='Blessed');assert.ok(have.secondsLeft>1100&&have.secondsLeft<=1200);
+  db.sqlite.prepare("UPDATE statuses SET expires_at = ? WHERE name = 'Blessed'").run(new Date(Date.now()-1000).toISOString());   // it ran out
+  r=await talk('Guard');assert.equal(r.results[0].ok,false);assert.equal(r.results[0].text,'The guard sneers at you.');
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,1);
+  db.sqlite.prepare("DELETE FROM statuses WHERE name = 'Blessed'").run();
+  await call('POST','/statuses/self',blessed,a.token);
+  r=await talk('Guard');assert.equal(r.results[0].ok,true);
+  assert.equal((await call('GET','/statuses',undefined,a.token)).statuses.some(s=>s.name==='Blessed'),false);   // used up
+});
