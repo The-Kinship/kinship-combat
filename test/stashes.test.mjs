@@ -4,9 +4,9 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
-function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
+function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql','0018_rooms.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
 const HERE={territory:339,x:10.5,y:2,z:-30.25};const stand=p=>{globalThis.__here=p};stand(HERE);
-const mk=db=>async(method,path,data,token)=>{const h=globalThis.__here;if(h){if(method==='GET')path+=(path.includes('?')?'&':'?')+`t=${h.territory}&x=${h.x}&y=${h.y}&z=${h.z}`;else if(data&&typeof data==='object'&&!data.at)data={...data,at:{...h}}}const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
+const mk=db=>async(method,path,data,token)=>{const h=globalThis.__here;if(h){if(method==='GET')path+=(path.includes('?')?'&':'?')+`t=${h.territory}&x=${h.x}&y=${h.y}&z=${h.z}${h.room?`&r=${h.room}`:''}`;else if(data&&typeof data==='object'&&!data.at)data={...data,at:{...h}}}const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
 const spot={name:'Old well',zone:'Mist',territory:339,map:72,x:10.5,y:2,z:-30.25,mapX:11.2,mapY:9.8};
 const cookie={name:'Burnt cookie',icon:'game:20001',description:'x',useLabel:'Eat',useText:'Ash.',consumable:true};
 async function join(call,name){const r=await call('POST','/items/register',{name,memberPassword:'fcpass'});assert.equal(r.status,201);return r}
@@ -131,4 +131,16 @@ test('far away you only see counts per zone; other people\'s stashes open only w
   assert.equal((await call('GET','/stashes/'+st.id,undefined,a.token)).status,200);
   stand(HERE);
   assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,200);
+});
+
+test('a stash in a house is only visible and usable inside that same house, not an identical house elsewhere',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  const inHouse=r=>({...HERE,territory:282,room:r});
+  stand(inHouse('h40-1-3-12-0'));
+  const st=(await call('POST','/stashes',{...spot,territory:282,room:'h40-1-3-12-0',name:'Cellar'},a.token)).stash;
+  assert.equal(st.room,'h40-1-3-12-0');
+  stand(inHouse('h40-1-3-12-0'));assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,200);
+  stand(inHouse('h40-1-3-13-0'));assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,403);   // same layout, different house
+  stand({...HERE,territory:282});assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,403);      // not in a house at all
+  assert.equal((await call('POST','/stashes',{...spot,room:'bad room!'},a.token)).status,400);
 });
