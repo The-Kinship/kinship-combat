@@ -24,6 +24,10 @@ test('profiles: save, everyone can read, bad links and too many fields are refus
   assert.equal((await call('POST','/profile',{...body,fields:Array.from({length:7},()=>({label:'x',value:'y'}))},a)).status,400);
   assert.equal((await call('POST','/profile',{...body,fields:[{label:'',value:'y'}]},a)).status,400);
   assert.equal((await call('POST','/profile',{...body,glance:'x'.repeat(501)},a)).status,400);
+  assert.equal((await call('POST','/profile/admin/clear-portrait',{adminPassword:'nope',name:'Mira Vale'})).status,403);
+  assert.equal((await call('POST','/profile/admin/clear-portrait',{adminPassword:'dmpass',name:'Nobody Here'})).status,404);
+  const clr=await call('POST','/profile/admin/clear-portrait',{adminPassword:'dmpass',name:'Mira'});assert.equal(clr.status,200);assert.equal(clr.name,'Mira Vale');
+  const seen=(await call('GET','/profiles',undefined,b)).profiles.find(p=>p.name==='Mira Vale');assert.equal(seen.portrait,'');assert.equal(seen.glance,'A tall woman in a grey cloak.');
   // saving again replaces; clearing the portrait is allowed; others' profiles are untouched
   const again=await call('POST','/profile',{glance:'Changed'},a);assert.equal(again.profile.glance,'Changed');assert.equal(again.profile.portrait,'');assert.deepEqual(again.profile.fields,[]);
   assert.equal((await call('GET','/profile',undefined,b)).profile.glance,'');
