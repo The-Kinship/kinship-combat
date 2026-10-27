@@ -2,6 +2,7 @@
 // Quests: an Advocate writes a quest as ordered steps; players talk to targeted NPCs and the server moves them along.
 // Step types: talk (the NPC speaks), give (hand over an Advocate-made item, which is used up), receive (the NPC gives an item).
 import { fail } from './engine.mjs';
+import { randomInt } from 'node:crypto';
 import { who, rand, str, nameKey, itemFields, inventory, CAP } from './items.mjs';
 import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
 
@@ -16,7 +17,13 @@ function grant(g, at) {
 }
 
 const MAX_QUESTS = 60, MAX_STEPS = 12, MAX_ACTIVE = 15;
-const TYPES = ['talk', 'give', 'receive', 'look', 'listen', 'search'];
+const TYPES = ['talk', 'give', 'receive', 'look', 'listen', 'search', 'fight'];
+const whole = (v, name, lo, hi, dflt) => { if (v === undefined || v === null) return dflt; if (!Number.isInteger(v) || v < lo || v > hi) fail(`${name} must be a whole number from ${lo} to ${hi}.`); return v; };
+function fightSpec(f) {
+  f = f && typeof f === 'object' ? f : {};
+  return { npcHp: whole(f.npcHp, 'Enemy HP', 1, 999, 30), npcDie: whole(f.npcDie, 'Enemy die', 2, 100, 8), npcBonus: whole(f.npcBonus, 'Enemy bonus', -50, 50, 0),
+    playerHp: whole(f.playerHp, 'Player HP', 1, 999, 30), playerDie: whole(f.playerDie, 'Player die', 2, 100, 8), playerBonus: whole(f.playerBonus, 'Player bonus', -50, 50, 0) };
+}
 const SPOT = ['look', 'listen', 'search'];
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
 function place(d) {
@@ -31,15 +38,16 @@ function steps(list) {
   return list.map((s, i) => {
     const at = `Step ${i + 1}`;
     if (!s || typeof s !== 'object' || !TYPES.includes(s.type)) fail(`${at} needs a type.`);
-    const spot = SPOT.includes(s.type);
+    const spot = SPOT.includes(s.type), fight = s.type === 'fight';
     const out = { type: s.type, npc: spot ? '' : str(s.npc, `${at} character name`, 40), text: str(s.text, `${at} text`, 600), hint: str(s.hint, `${at} hint`, 150, false) };
-    if (spot) out.place = place(s.place);
+    if (spot || (fight && s.place)) out.place = place(s.place);
+    if (fight) out.fight = fightSpec(s.fight);
     const needs = str(s.needs, `${at} required status`, 30, false);
     if (needs) { out.needs = needs; out.needText = str(s.needText, `${at} message when missing`, 200, false); out.takesNeeded = s.takesNeeded === true; }
     if (s.grants) out.grants = grant(s.grants, at);
     if (s.type === 'give') out.item = str(s.item, `${at} item to hand over`, 40);
     if (s.type === 'receive' && (!s.gift || typeof s.gift !== 'object')) fail(`${at} needs an item to give.`);
-    if ((s.type === 'receive' || s.type === 'search') && s.gift && typeof s.gift === 'object') {
+    if ((s.type === 'receive' || s.type === 'search' || fight) && s.gift && typeof s.gift === 'object') {
       out.gift = itemFields(s.gift);
       out.once = s.once === true;
     }
@@ -51,6 +59,12 @@ function mineView(r) {
   const list = JSON.parse(r.steps), cur = r.done ? null : list[r.step];
   return { questId: r.quest_id, title: r.title, intro: r.intro, step: r.step, total: list.length, done: !!r.done,
     current: cur ? { type: cur.type, npc: cur.npc, item: cur.item || '', hint: cur.hint, place: cur.place || null } : null };
+}
+const rollDie = (sides, bonus) => { const raw = 1 + randomInt(sides); return { raw, total: Math.max(1, raw + bonus) }; };
+const bonusText = b => (b ? ` ${b > 0 ? '+' : '-'}${Math.abs(b)}` : '');
+function fightView(q, st, me, f, status, extra = {}) {
+  const spec = st.fight;
+  return { questId: q.quest_id, npc: st.npc, playerName: me.name, playerHp: f.player_hp, playerMax: spec.playerHp, npcHp: f.npc_hp, npcMax: spec.npcHp, log: JSON.parse(f.log), status, ...extra };
 }
 async function insertGift(db, ownerId, f) {
   const r = await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?")
@@ -126,6 +140,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     if (path === '/quests/admin/delete') {
       const id = str(d.questId, 'Quest', 20);
       await db.prepare('DELETE FROM quest_progress WHERE quest_id = ?').bind(id).run();
+      await db.prepare('DELETE FROM quest_fights WHERE quest_id = ?').bind(id).run();
       await db.prepare('DELETE FROM quest_claims WHERE quest_id = ?').bind(id).run();
       const r = await db.prepare('DELETE FROM quests WHERE id = ?').bind(id).run();
       if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
@@ -140,10 +155,11 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       if (!to) fail('No member has that name.', 404);
       const id = str(d.questId, 'Quest', 20);
       if (!(await db.prepare('SELECT id FROM quests WHERE id = ?').bind(id).first())) fail('That quest no longer exists.', 404);
-      if (path === '/quests/admin/unassign') { await db.prepare('DELETE FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); return json({ unassigned: true, to: to.name }); }
+      if (path === '/quests/admin/unassign') { await db.prepare('DELETE FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); return json({ unassigned: true, to: to.name }); }
       const have = await db.prepare('SELECT done FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(to.id, id).first();
       if (!have && (await db.prepare('SELECT count(*) AS total FROM quest_progress WHERE member_id = ? AND done = 0').bind(to.id).first()).total >= MAX_ACTIVE) fail(`${to.name} already has ${MAX_ACTIVE} quests going.`, 409);
       await db.prepare('INSERT INTO quest_progress (member_id, quest_id, step, done, updated_at) VALUES (?,?,0,0,?) ON CONFLICT(member_id, quest_id) DO UPDATE SET step = 0, done = 0, updated_at = excluded.updated_at').bind(to.id, id, new Date().toISOString()).run();
+      await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run();
       return json({ assigned: true, to: to.name }, 201);
     }
     fail('Endpoint not found.', 404);
@@ -154,6 +170,62 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
   if (!post && path === '/quests/mine') {
     const { results } = await db.prepare(SELECT_P).bind(me.id).all();
     return json({ quests: results.map(mineView) });
+  }
+
+  if (post && (path === '/quests/fight/start' || path === '/quests/fight/attack')) {
+    await rate(db, 'quest-fight:' + me.id, 90);
+    const d = await input(request), starting = path === '/quests/fight/start';
+    const { results } = await db.prepare(SELECT_P.replace('ORDER BY', 'AND p.done = 0 ORDER BY')).bind(me.id).all();
+    let row = null, list = null, st = null;
+    for (const r of results) {
+      const l = JSON.parse(r.steps), cur = l[r.step];
+      if (!cur || cur.type !== 'fight') continue;
+      const hit = starting
+        ? (cur.place ? (Number.isInteger(d.territory) && cur.place.territory === d.territory) : nameKey(cur.npc) === nameKey(String(d.npc ?? '')))
+        : r.quest_id === String(d.questId ?? '');
+      if (hit) { row = r; list = l; st = cur; break; }
+    }
+    if (!row) {
+      if (!starting) await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, String(d.questId ?? '')).run();
+      return json({ fight: null });
+    }
+    if (st.needs && !(await findActive(db, me.id, st.needs))) return json({ fight: null, text: st.needText || 'You are not ready for this yet.' });
+    const now = new Date().toISOString(), spec = st.fight;
+    let f = await db.prepare('SELECT * FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).first();
+    if (f && f.step !== row.step) { await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).run(); f = null; }
+    if (starting) {
+      if (!f) {
+        await db.prepare('INSERT INTO quest_fights (member_id, quest_id, step, player_hp, npc_hp, log, updated_at) VALUES (?,?,?,?,?,?,?)').bind(me.id, row.quest_id, row.step, spec.playerHp, spec.npcHp, JSON.stringify([`${st.npc} squares up to you.`]), now).run();
+        f = await db.prepare('SELECT * FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).first();
+      }
+      return json({ fight: fightView(row, st, me, f, f.npc_hp <= 0 ? 'blocked' : 'active') });
+    }
+    if (!f) return json({ fight: null });
+    const log = JSON.parse(f.log);
+    const finish = async () => {
+      const line = await runStep(db, me, row, list, st);
+      if (line && line.ok) {
+        await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).run();
+        return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'won', { result: line }), items: await inventory(db, me.id) });
+      }
+      await db.prepare('UPDATE quest_fights SET log = ?, updated_at = ? WHERE member_id = ? AND quest_id = ?').bind(JSON.stringify(log.slice(-8)), now, me.id, row.quest_id).run();
+      return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'blocked', { result: line }) });
+    };
+    if (f.npc_hp <= 0) return await finish();       // the fight was won but the reward was held up, so try again
+    const mine = rollDie(spec.playerDie, spec.playerBonus);
+    f.npc_hp = Math.max(0, f.npc_hp - mine.total);
+    log.push(`You strike ${st.npc} for ${mine.total} (d${spec.playerDie}: ${mine.raw}${bonusText(spec.playerBonus)}).`);
+    if (f.npc_hp <= 0) { log.push(`${st.npc} goes down.`); return await finish(); }
+    const theirs = rollDie(spec.npcDie, spec.npcBonus);
+    f.player_hp = Math.max(0, f.player_hp - theirs.total);
+    log.push(`${st.npc} hits you for ${theirs.total} (d${spec.npcDie}: ${theirs.raw}${bonusText(spec.npcBonus)}).`);
+    if (f.player_hp <= 0) {
+      log.push('You fall.');
+      await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).run();
+      return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'lost') });
+    }
+    await db.prepare('UPDATE quest_fights SET player_hp = ?, npc_hp = ?, log = ?, updated_at = ? WHERE member_id = ? AND quest_id = ?').bind(f.player_hp, f.npc_hp, JSON.stringify(log.slice(-8)), now, me.id, row.quest_id).run();
+    return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'active') });
   }
 
   // Spots where a quest can be picked up. Only the place goes out, never the quest's name or what it says.
@@ -201,7 +273,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     for (const r of results) {
       const list = JSON.parse(r.steps), st = list[r.step];
       if (!st) continue;
-      if (talking ? (SPOT.includes(st.type) || nameKey(st.npc) !== npc) : (st.type !== kind || st.place.territory !== territory)) continue;
+      if (talking ? (SPOT.includes(st.type) || st.type === 'fight' || nameKey(st.npc) !== npc) : (st.type !== kind || st.place.territory !== territory)) continue;
       const line = await runStep(db, me, r, list, st);
       if (line) out.push(line);
     }
