@@ -83,3 +83,11 @@ test('removing a member clears what they wear',async t=>{
   assert.equal((await call('POST','/items/admin/remove-member',{adminPassword:'dmpass',name:'Mira'})).status,200);
   assert.equal(db.sqlite.prepare("SELECT count(*) AS n FROM items").get().n,0);assert.equal(db.sqlite.prepare("SELECT count(*) AS n FROM worn").get().n,0);
 });
+
+test('anyone can look at what another character is wearing',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  await call('POST','/items',gear(),a);await call('POST','/armory/equip',{itemId:(await call('GET','/items/me',undefined,a)).items[0].id},a);
+  const seen=await call('GET','/armory/of?name=mira',undefined,b);assert.equal(seen.status,200);assert.equal(seen.name,'Mira');assert.equal(seen.slots.find(s=>s.slot==='helm').item.name,'Iron Helm');assert.equal(seen.slots.find(s=>s.slot==='helm').item.canEdit,false);
+  assert.equal((await call('GET','/armory/of?name=Nobody',undefined,b)).status,404);
+  assert.equal((await call('GET','/armory/of?name=Mira')).status,401);
+});
