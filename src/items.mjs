@@ -1,12 +1,12 @@
 'use strict';
 // RP items: members register once (name + member password), create items, hold up to CAPACITY, give them away, and use them.
 // Items never touch the game. They only exist inside the plugin.
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fail } from './engine.mjs';
 import { earn } from './bank.mjs';
 import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
 
-const CAPACITY = 10, MAX_MEMBERS = 300, MAX_ITEMS = 3000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
+const CAPACITY = 10, MAX_MEMBERS = 300, MAX_PER_PLAYER = 10, MAX_ITEMS = 3000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
 export const CAP = CAPACITY;
 export const STACK = 10;   // identical items share a slot, up to this many per slot
 const sha = s => createHash('sha256').update(s).digest('hex');
@@ -110,18 +110,37 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     await rate(db, 'items-register:' + ip, 10);
     const data = await input(request); checkMember(data.memberPassword);
     const name = str(data.name, 'Your name', 40); if (name.length < 2) fail('Your name must be at least 2 characters.');
-    if ((await db.prepare('SELECT count(*) AS total FROM members').first()).total >= MAX_MEMBERS) fail('The RP system is full.', 503);
+    if ((await db.prepare('SELECT count(*) AS total FROM members').first()).total >= MAX_MEMBERS) fail('The item system is full.', 503);
     if (await db.prepare('SELECT id FROM members WHERE name_key = ?').bind(nameKey(name)).first()) fail('That name is already registered. If it is yours, use your recovery code.', 409);
-    const token = rand(24), id = rand(8), recovery = rand(6).toUpperCase();
-    await db.prepare('INSERT INTO members (id, name, name_key, token_hash, recovery_hash, created_at) VALUES (?,?,?,?,?,?)').bind(id, name, nameKey(name), sha(token), sha(recovery), new Date().toISOString()).run();
-    return json({ token, memberId: id, name, recoveryCode: `${recovery.slice(0, 4)}-${recovery.slice(4, 8)}-${recovery.slice(8)}` }, 201);
+    // A character can join an existing player (someone's alt) by giving that player's recovery code. Otherwise they start a new player and get a code.
+    let player = null;
+    if (data.recoveryCode) {
+      player = await db.prepare('SELECT id, recovery_hash FROM players WHERE recovery_hash = ?').bind(sha(recoveryKey(data.recoveryCode))).first();
+      if (!player) fail('That recovery code is not right.', 403);
+      if ((await db.prepare('SELECT count(*) AS total FROM members WHERE player_id = ?').bind(player.id).first()).total >= MAX_PER_PLAYER) fail(`One recovery code can cover up to ${MAX_PER_PLAYER} characters.`, 409);
+    }
+    const token = rand(24), id = rand(8), now = new Date().toISOString();
+    let recovery = null, hash;
+    if (player) hash = player.recovery_hash;
+    else {
+      recovery = rand(6).toUpperCase(); hash = sha(recovery);
+      player = { id: rand(8) };
+      await db.prepare('INSERT INTO players (id, recovery_hash, created_at) VALUES (?,?,?)').bind(player.id, hash, now).run();
+    }
+    await db.prepare('INSERT INTO members (id, name, name_key, token_hash, recovery_hash, player_id, created_at) VALUES (?,?,?,?,?,?,?)').bind(id, name, nameKey(name), sha(token), hash, player.id, now).run();
+    return json({ token, memberId: id, name, recoveryCode: recovery ? `${recovery.slice(0, 4)}-${recovery.slice(4, 8)}-${recovery.slice(8)}` : null, linked: !recovery }, 201);
   }
   if (post && path === '/items/recover') {
     await rate(db, 'items-recover:' + ip, 10);
-    const data = await input(request), key = nameKey(str(data.name, 'Your name', 40));
-    const row = await db.prepare('SELECT id, name, recovery_hash FROM members WHERE name_key = ?').bind(key).first();
-    const given = Buffer.from(sha(recoveryKey(data.recoveryCode))), real = Buffer.from(row ? row.recovery_hash : sha('none'));
-    if (!row || !timingSafeEqual(given, real)) fail('That name or recovery code is not right.', 403);
+    const data = await input(request), given = recoveryKey(data.recoveryCode), wanted = data.name === undefined || data.name === '' ? '' : str(data.name, 'Your name', 40);
+    const player = await db.prepare('SELECT id, recovery_hash FROM players WHERE recovery_hash = ?').bind(sha(given)).first();
+    if (!player) { fail(wanted ? 'That name or recovery code is not right.' : 'That recovery code is not right.', 403); }
+    if (!wanted) {   // no name yet: say who this code covers, so the person can pick which character this is
+      const { results } = await db.prepare('SELECT name FROM members WHERE player_id = ? ORDER BY created_at, rowid').bind(player.id).all();
+      return json({ characters: results.map(r => r.name) });
+    }
+    const row = await db.prepare('SELECT id, name FROM members WHERE name_key = ? AND player_id = ?').bind(nameKey(wanted), player.id).first();
+    if (!row) fail('That name or recovery code is not right.', 403);
     const token = rand(24);
     await db.prepare('UPDATE members SET token_hash = ? WHERE id = ?').bind(sha(token), row.id).run();
     return json({ token, memberId: row.id, name: row.name });
@@ -185,7 +204,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       return json({ deleted: true });
     }
     if (path === '/items/admin/remove-member') {
-      const row = await db.prepare('SELECT id FROM members WHERE name_key = ?').bind(nameKey(str(data.name, 'Name', 40))).first();
+      const row = await db.prepare('SELECT id, player_id FROM members WHERE name_key = ?').bind(nameKey(str(data.name, 'Name', 40))).first();
       if (!row) fail('No member has that name.', 404);
       await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
       await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
@@ -198,6 +217,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare('DELETE FROM quest_claims WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM quest_fights WHERE member_id = ?').bind(row.id).run();
       await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
+      await db.prepare('DELETE FROM players WHERE id = ? AND NOT EXISTS (SELECT 1 FROM members WHERE player_id = players.id)').bind(row.player_id).run();   // a player with no characters left goes too
       return json({ removed: true });
     }
     fail('Endpoint not found.', 404);
