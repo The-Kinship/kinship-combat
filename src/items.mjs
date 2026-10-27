@@ -158,7 +158,9 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const members = (await db.prepare('SELECT name FROM members ORDER BY name_key').all()).results.map(m => m.name);
       const stashes = (await db.prepare("SELECT s.id, s.name, s.zone, s.is_private, m.name AS owner, (SELECT count(*) FROM items WHERE owner_id = 's' || s.id) AS count FROM stashes s LEFT JOIN members m ON m.id = s.owner_id ORDER BY s.created_at DESC LIMIT 300").all()).results
         .map(r => ({ id: r.id, name: r.name, zone: r.zone, owner: r.owner || '(removed)', isPrivate: !!r.is_private, count: r.count }));
-      return json({ stashes, items: results.map(r => ({ id: r.id, name: r.name, icon: r.icon, description: r.description, owner: r.owner || '(removed)', creator: r.creator_id === 'dm' ? '(SM gift)' : (r.creator || '(removed)') })), members });
+      const signs = (await db.prepare('SELECT s.id, s.name, s.zone, s.gold, m.name AS owner FROM signs s LEFT JOIN members m ON m.id = s.owner_id ORDER BY s.created_at DESC LIMIT 500').all()).results
+        .map(r => ({ id: r.id, name: r.name, zone: r.zone, owner: r.owner || '(removed)', gold: r.gold || 0 }));
+      return json({ stashes, signs, items: results.map(r => ({ id: r.id, name: r.name, icon: r.icon, description: r.description, owner: r.owner || '(removed)', creator: r.creator_id === 'dm' ? '(SM gift)' : (r.creator || '(removed)') })), members });
     }
     if (path === '/items/admin/grant') {
       const f = itemFields(data, true), recipe = recipeJson(data, true);

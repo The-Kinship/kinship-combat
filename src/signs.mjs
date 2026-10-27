@@ -4,6 +4,7 @@
 import { fail } from './engine.mjs';
 import { who, rand, str } from './items.mjs';
 import { amountOf, spend, earn, MAX_BALANCE } from './bank.mjs';
+import { positionOf, isNear, mustBeNear, zoneCounts, NEARBY } from './nearby.mjs';
 
 const MAX_PER_MEMBER = 10, MAX_SIGNS = 500;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
@@ -32,8 +33,12 @@ export async function handleSigns(request, db, path, { json, input, rate, ip, ch
   const me = await who(db, request);
 
   if (!post && path === '/signs') {
+    // Your own signs, and other people's only when you are close. For the rest you only get how many there are in each zone.
+    const here = positionOf(new URL(request.url), null);
     const { results } = await db.prepare(SELECT + ' ORDER BY s.zone, s.name LIMIT 500').all();
-    return json({ signs: results.map(r => sv(r, me.id, false)) });
+    const shown = results.filter(r => r.owner_id === me.id || isNear(r, here, NEARBY));
+    const elsewhere = results.filter(r => r.owner_id !== me.id && !isNear(r, here, NEARBY));
+    return json({ signs: shown.map(r => sv(r, me.id, false)), zones: zoneCounts(elsewhere), elsewhere: elsewhere.length });
   }
   if (post && path === '/signs') {
     await rate(db, 'sign-create:' + me.id, 20);
@@ -54,9 +59,14 @@ export async function handleSigns(request, db, path, { json, input, rate, ip, ch
   const row = await db.prepare(SELECT + ' WHERE s.id = ?').bind(id).first();
   if (!row) fail('That sign does not exist.', 404);
 
-  if (!post && !route) return json({ sign: sv(row, me.id, true) });
+  if (!post && !route) {
+    if (row.owner_id !== me.id) mustBeNear(row, positionOf(new URL(request.url), null), 'sign');
+    return json({ sign: sv(row, me.id, true) });
+  }
   if (!post) fail('Endpoint not found.', 404);
   if (route === 'claim') {
+    const d = await input(request);
+    if (row.owner_id !== me.id) mustBeNear(row, positionOf(new URL(request.url), d), 'sign');
     await rate(db, 'sign-claim:' + me.id, 20);
     const amount = row.gold || 0;
     if (amount <= 0) fail('There is nothing here to take.', 409);

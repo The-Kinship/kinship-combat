@@ -4,6 +4,7 @@
 import { fail } from './engine.mjs';
 import { who, rand, str, inventory, stackViews, ownerRows, stacks, fits, unitRow, groupIds, CAP, STACK } from './items.mjs';
 import { amountOf, spend, earn, MAX_BALANCE } from './bank.mjs';
+import { positionOf, isNear, mustBeNear, zoneCounts, NEARBY } from './nearby.mjs';
 
 const STASH_CAP = 20, MAX_PER_MEMBER = 3, MAX_STASHES = 300;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
@@ -15,62 +16,66 @@ function place(d) {
 const SELECT = "SELECT s.*, m.name AS owner_name, (SELECT count(*) FROM items WHERE owner_id = 's' || s.id) AS count FROM stashes s LEFT JOIN members m ON m.id = s.owner_id";
 const sv = (r, meId) => ({ id: r.id, name: r.name, zone: r.zone, territory: r.territory, map: r.map_id, x: r.x, y: r.y, z: r.z, mapX: r.map_x, mapY: r.map_y, ownerName: r.owner_name || '(removed)', mine: r.owner_id === meId, isPrivate: !!r.is_private, count: r.count, gold: r.gold || 0, capacity: STASH_CAP });
 
-async function open(db, id, me) {
+async function open(db, id, me, pos) {
   const r = await db.prepare(SELECT + ' WHERE s.id = ?').bind(id).first();
   if (!r || (r.is_private && r.owner_id !== me.id)) fail('That stash does not exist.', 404);
+  if (r.owner_id !== me.id) mustBeNear(r, pos, 'stash');   // other people's stashes only open when you are standing at them
   return r;
 }
 async function contents(db, id, me) {
   return stackViews(await ownerRows(db, 's' + id), me.id);
 }
-async function answer(json, db, id, me, status = 200) {
-  const r = await open(db, id, me), stashItems = await contents(db, id, me);
+async function answer(json, db, id, me, pos, status = 200) {
+  const r = await open(db, id, me, pos), stashItems = await contents(db, id, me);
   r.count = stashItems.length;
   return json({ stash: sv(r, me.id), stashItems, items: await inventory(db, me.id), capacity: CAP }, status);
 }
 
-export async function handleStashes(request, db, path, { json, input, rate }) {
-  const me = await who(db, request), post = request.method === 'POST';
+export async function handleStashes(request, db, path, { json, input: readBody, rate }) {
+  const me = await who(db, request), post = request.method === 'POST', url = new URL(request.url);
+  let body;
+  const input = async () => (body ??= await readBody(request));   // the body can only be read once, and the position is in it
+  const pos = () => positionOf(url, body);
 
   if (!post && path === '/stashes') {
-    const { results } = await db.prepare(SELECT + ' WHERE s.is_private = 0 OR s.owner_id = ? ORDER BY s.zone, s.name LIMIT 300').bind(me.id).all();
-    const byStash = new Map();
-    for (const row of (await db.prepare("SELECT i.*, (SELECT count(*) FROM items c WHERE c.owner_id = 'i' || i.id) AS holds FROM items i WHERE length(i.owner_id) = 13 AND substr(i.owner_id, 1, 1) = 's' ORDER BY i.created_at, i.rowid").all()).results) {
-      if (!byStash.has(row.owner_id)) byStash.set(row.owner_id, []);
-      byStash.get(row.owner_id).push(row);
-    }
-    for (const r of results) r.count = stacks(byStash.get('s' + r.id) || []).length;
-    return json({ stashes: results.map(r => sv(r, me.id)) });
+    // You see your own stashes, and other people's only when you are close. For the rest you only get how many there are in each zone.
+    const here = pos();
+    const { results: all } = await db.prepare(SELECT + ' WHERE s.is_private = 0 OR s.owner_id = ? ORDER BY s.zone, s.name LIMIT 300').bind(me.id).all();
+    const shown = all.filter(r => r.owner_id === me.id || isNear(r, here, NEARBY));
+    const elsewhere = all.filter(r => r.owner_id !== me.id && !isNear(r, here, NEARBY));
+    for (const r of shown) r.count = (await contents(db, r.id, me)).length;   // slots used, not single items
+    return json({ stashes: shown.map(r => sv(r, me.id)), zones: zoneCounts(elsewhere), elsewhere: elsewhere.length });
   }
   if (post && path === '/stashes') {
     await rate(db, 'stash-create:' + me.id, 10);
-    const d = await input(request), p = place(d), name = str(d.name, 'Stash name', 40);
+    const d = await input(), p = place(d), name = str(d.name, 'Stash name', 40);
     if ((await db.prepare('SELECT count(*) AS total FROM stashes WHERE owner_id = ?').bind(me.id).first()).total >= MAX_PER_MEMBER) fail(`You can have ${MAX_PER_MEMBER} stashes. Delete one first.`, 409);
     if ((await db.prepare('SELECT count(*) AS total FROM stashes').first()).total >= MAX_STASHES) fail('The stash system is full.', 503);
     const id = rand(6);
     await db.prepare('INSERT INTO stashes (id, owner_id, name, zone, territory, map_id, x, y, z, map_x, map_y, is_private, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .bind(id, me.id, name, p.zone, p.territory, p.map, p.x, p.y, p.z, p.mapX, p.mapY, d.isPrivate === true ? 1 : 0, new Date().toISOString()).run();
-    return answer(json, db, id, me, 201);
+    return answer(json, db, id, me, pos(), 201);
   }
 
   const m = path.match(/^\/stashes\/([a-f0-9]{12})(?:\/(update|delete|put|take|put-gold|take-gold))?$/);
   if (!m) fail('Endpoint not found.', 404);
   const [, id, route] = m;
 
-  if (!post && !route) return answer(json, db, id, me);
+  if (!post && !route) return answer(json, db, id, me, pos());
   if (!post) fail('Endpoint not found.', 404);
-  const stash = await open(db, id, me);
+  if (post) await input();   // read the body first: it carries the position
+  const stash = await open(db, id, me, pos());
 
   if (route === 'update') {
     if (stash.owner_id !== me.id) fail('Only the owner can change a stash.', 403);
-    const d = await input(request);
+    const d = await input();
     const name = d.name === undefined ? stash.name : str(d.name, 'Stash name', 40);
     const priv = d.isPrivate === undefined ? stash.is_private : (d.isPrivate === true ? 1 : 0);
     if (d.territory !== undefined) {
       const p = place(d);
       await db.prepare('UPDATE stashes SET name=?, is_private=?, zone=?, territory=?, map_id=?, x=?, y=?, z=?, map_x=?, map_y=? WHERE id=?').bind(name, priv, p.zone, p.territory, p.map, p.x, p.y, p.z, p.mapX, p.mapY, id).run();
     } else await db.prepare('UPDATE stashes SET name=?, is_private=? WHERE id=?').bind(name, priv, id).run();
-    return answer(json, db, id, me);
+    return answer(json, db, id, me, pos());
   }
   if (route === 'delete') {
     if (stash.owner_id !== me.id) fail('Only the owner can delete a stash.', 403);
@@ -80,7 +85,7 @@ export async function handleStashes(request, db, path, { json, input, rate }) {
   }
   if (route === 'put-gold' || route === 'take-gold') {
     await rate(db, 'stash-gold:' + me.id, 30);
-    const amount = amountOf((await input(request)).amount);
+    const amount = amountOf((await input()).amount);
     if (route === 'put-gold') {
       if (stash.gold + amount > MAX_BALANCE) fail('That stash cannot hold that much gold.', 409);
       if (!(await spend(db, me.id, amount, `Put in ${stash.name}`))) fail('You do not have that much gold.', 409);
@@ -94,10 +99,10 @@ export async function handleStashes(request, db, path, { json, input, rate }) {
         fail('You cannot carry that much gold.', 409);
       }
     }
-    return answer(json, db, id, me);
+    return answer(json, db, id, me, pos());
   }
   await rate(db, 'stash-move:' + me.id, 60);
-  const d = await input(request), itemId = str(d.itemId, 'Item', 20), key = 's' + id;
+  const d = await input(), itemId = str(d.itemId, 'Item', 20), key = 's' + id;
   const count = d.count === undefined ? 1 : d.count;
   if (!Number.isInteger(count) || count < 1 || count > 100) fail('Choose how many, from 1 to 100.');
   const [from, to, cap, toName] = route === 'put' ? [me.id, key, STASH_CAP, 'The stash'] : [key, me.id, CAP, 'Your inventory'];
@@ -112,5 +117,5 @@ export async function handleStashes(request, db, path, { json, input, rate }) {
     const r = await db.prepare('UPDATE items SET owner_id = ? WHERE id = ? AND owner_id = ? AND (SELECT count(*) FROM items WHERE owner_id = ?) < ?').bind(to, u, from, to, cap * STACK).run();
     if (r.meta.changes !== 1) fail(`${toName} is full (${cap} slots).`, 409);
   }
-  return answer(json, db, id, me);
+  return answer(json, db, id, me, pos());
 }
