@@ -111,3 +111,22 @@ test('give and delete can take some of a stack, or all of it',async t=>{
   assert.equal((await call('POST',`/items/${(await inv(call,b.token))[0].id}/delete`,{},b.token)).status,200);   // old plugins send an empty body: one unit
   assert.equal((await inv(call,b.token))[0].qty,3);
 });
+
+test('stash put and take can move several at once',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await join(call,'Sesen');
+  await grant(call,'Sesen',{copies:6});
+  const st=await call('POST','/stashes',{name:'Box',zone:'Z',territory:1,map:1,x:0,y:0,z:0,mapX:0,mapY:0},a.token);assert.equal(st.status,201,JSON.stringify(st));
+  const sid=st.stash?.id||st.id;
+  let mine=await inv(call,a.token);
+  assert.equal((await call('POST',`/stashes/${sid}/put`,{itemId:mine[0].id,count:7},a.token)).status,409);
+  assert.equal((await call('POST',`/stashes/${sid}/put`,{itemId:mine[0].id,count:4},a.token)).status,200);
+  mine=await inv(call,a.token);assert.equal(mine[0].qty,2);
+  const open=await call('GET',`/stashes/${sid}`,undefined,a.token);
+  assert.equal(open.stashItems[0].qty,4);
+  assert.equal((await call('POST',`/stashes/${sid}/take`,{itemId:open.stashItems[0].id,count:3},a.token)).status,200);
+  assert.equal((await inv(call,a.token))[0].qty,5);
+  const left=(await call('GET',`/stashes/${sid}`,undefined,a.token)).stashItems[0];
+  assert.equal((await call('POST',`/stashes/${sid}/take`,{itemId:left.id},a.token)).status,200);   // no count: one
+  assert.equal((await inv(call,a.token))[0].qty,6);
+});
