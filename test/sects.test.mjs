@@ -57,3 +57,17 @@ test('guessing is capped per address and per sect, and a closed setup says so',a
   assert.equal((await sectCap.call({sect:'iron',token:saved},'5.5.5.5')).status,200);   // a saved token still works while the sect is locked to guessers
   const tok=(await sectCap.call({sect:'iron',token:'x'},'5.5.5.5'));assert.equal(tok.status,401);   // saved tokens are never locked out, only wrong ones fail
 });
+
+test('the faction website may call the sect route from its own address, and nothing else is opened to other sites',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());
+  const extras={sectPasswords:'{"iron":"steel"}',sectContentUrl:'https://sheet.test/cors',fetcher:async()=>({ok:true,text:async()=>CSV})};
+  const send=(method,path,origin,data)=>handle(new Request('https://kinship.test'+path,{method,headers:{...(origin?{Origin:origin}:{}),...(data?{'Content-Type':'application/json'}:{})},body:data?JSON.stringify(data):undefined}),db,'dmpass','fcpass','bankpw',extras);
+  const site='https://the-kinship.github.io';
+  const pre=await send('OPTIONS','/api/sects/open',site);assert.equal(pre.status,204);assert.equal(pre.headers.get('access-control-allow-origin'),site);
+  const ok=await send('POST','/api/sects/open',site,{sect:'iron',password:'steel'});assert.equal(ok.status,200);assert.equal(ok.headers.get('access-control-allow-origin'),site);
+  const wrong=await send('POST','/api/sects/open',site,{sect:'iron',password:'no'});assert.equal(wrong.status,401);assert.equal(wrong.headers.get('access-control-allow-origin'),site);   // the page can read the error
+  const other=await send('POST','/api/sects/open','https://evil.example',{sect:'iron',password:'steel'});assert.equal(other.status,403);assert.equal(other.headers.get('access-control-allow-origin'),null);
+  assert.equal((await send('OPTIONS','/api/sects/open','https://evil.example')).status,405);
+  const items=await send('POST','/api/items/register',site,{name:'Sneaky',memberPassword:'fcpass'});assert.equal(items.status,403);   // the site is only allowed on the sect route
+  assert.equal((await send('POST','/api/sects/open',null,{sect:'iron',password:'steel'})).status,200);   // the plugin sends no Origin
+});
