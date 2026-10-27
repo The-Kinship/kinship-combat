@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
 function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
-const mk=db=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
+const HERE={territory:339,x:10.5,y:2,z:-30.25};const stand=p=>{globalThis.__here=p};stand(HERE);
+const mk=db=>async(method,path,data,token)=>{const h=globalThis.__here;if(h){if(method==='GET')path+=(path.includes('?')?'&':'?')+`t=${h.territory}&x=${h.x}&y=${h.y}&z=${h.z}`;else if(data&&typeof data==='object'&&!data.at)data={...data,at:{...h}}}const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
 const spot={name:'Old well',zone:'Mist',territory:339,map:72,x:10.5,y:2,z:-30.25,mapX:11.2,mapY:9.8};
 const cookie={name:'Burnt cookie',icon:'game:20001',description:'x',useLabel:'Eat',useText:'Ash.',consumable:true};
 async function join(call,name){const r=await call('POST','/items/register',{name,memberPassword:'fcpass'});assert.equal(r.status,201);return r}
@@ -80,7 +81,7 @@ test('Advocates see stashes, can delete them, and removing a member clears their
   const s1=(await call('POST','/stashes',spot,a.token)).stash,s2=(await call('POST','/stashes',{...spot,name:'Other'},b.token)).stash;
   const it=(await call('POST','/items',cookie,a.token)).items[0];await call('POST',`/stashes/${s1.id}/put`,{itemId:it.id},a.token);
   const list=await call('POST','/items/admin/list',{adminPassword:'dmpass'});
-  assert.equal(list.stashes.length,2);assert.equal(list.items[0].owner,'Stash: Old well');
+  assert.equal(list.stashes.length,2);assert.equal(list.signs.length,0);assert.equal(list.items[0].owner,'Stash: Old well');
   assert.equal((await call('POST','/items/admin/delete-stash',{adminPassword:'fcpass',stashId:s1.id})).status,403);
   assert.equal((await call('POST','/items/admin/delete-stash',{adminPassword:'dmpass',stashId:s2.id})).status,200);
   assert.equal((await call('POST','/items/admin/remove-member',{adminPassword:'dmpass',name:'Mira'})).status,200);
@@ -92,7 +93,7 @@ test('gold can be put in and taken out of a stash, and a stash with gold cannot 
   const reg=async n=>{const r=await call('POST','/items/register',{name:n,memberPassword:'fcpass'});return r.token};
   const a=await reg('Mira'),b=await reg('Kael');
   await call('POST','/bank/admin/mint',{bankPassword:'bankpass',to:'Mira',amount:100});
-  const spot={territory:339,map:72,x:1,y:2,z:3,mapX:5,mapY:6,zone:'Mist'};
+  const spot={territory:339,map:72,x:10.5,y:2,z:-30.25,mapX:5,mapY:6,zone:'Mist'};
   const made=await call('POST','/stashes',{...spot,name:'Box'},a);const id=made.stash.id;
   assert.equal(made.stash.gold,0);
   assert.equal((await call('POST',`/stashes/${id}/put-gold`,{amount:500},a)).status,409);
@@ -105,4 +106,29 @@ test('gold can be put in and taken out of a stash, and a stash with gold cannot 
   assert.equal((await call('POST',`/stashes/${id}/take-gold`,{amount:5},b)).status,404);           // private stays private
   assert.equal((await call('POST','/items/admin/delete-stash',{adminPassword:'dmpass',stashId:id})).status,200);
   assert.equal((await call('GET','/bank/me',undefined,a)).gold,80);                                  // the rest went back to the owner
+});
+
+test('far away you only see counts per zone; other people\'s stashes open only when you stand next to them',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  stand(HERE);
+  const st=(await call('POST','/stashes',spot,a.token)).stash;
+  await call('POST','/stashes',{...spot,name:'Hidden',isPrivate:true},a.token);
+  // Kael is nearby (within the list range) but not at the stash
+  stand({territory:339,x:50,y:2,z:-30.25});
+  let list=await call('GET','/stashes',undefined,b.token);assert.equal(list.stashes.length,1);assert.equal(list.elsewhere,0);
+  assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,403);
+  // Kael is in another zone: no details, only a zone count
+  stand({territory:340,x:0,y:0,z:0});
+  list=await call('GET','/stashes',undefined,b.token);assert.equal(list.stashes.length,0);assert.deepEqual(list.zones,[{zone:'Mist',count:1}]);assert.equal(list.elsewhere,1);
+  assert.equal(list.stashes.length,0);
+  // No position at all behaves like far away
+  stand(null);
+  list=await call('GET','/stashes',undefined,b.token);assert.equal(list.stashes.length,0);assert.equal(list.elsewhere,1);
+  assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,403);
+  assert.equal((await call('POST','/stashes/'+st.id+'/put-gold',{amount:1},b.token)).status,403);
+  // The owner is never held back, and sees their own from anywhere
+  list=await call('GET','/stashes',undefined,a.token);assert.equal(list.stashes.length,2);
+  assert.equal((await call('GET','/stashes/'+st.id,undefined,a.token)).status,200);
+  stand(HERE);
+  assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,200);
 });

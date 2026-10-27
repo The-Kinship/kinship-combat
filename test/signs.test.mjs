@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
 function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
-const mk=db=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
+const HERE={territory:339,x:10.5,y:2,z:-30.25};const stand=p=>{globalThis.__here=p};stand(HERE);
+const mk=db=>async(method,path,data,token)=>{const h=globalThis.__here;if(h){if(method==='GET')path+=(path.includes('?')?'&':'?')+`t=${h.territory}&x=${h.x}&y=${h.y}&z=${h.z}`;else if(data&&typeof data==='object'&&!data.at)data={...data,at:{...h}}}const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
 const spot={name:'Tree carving',description:'This tree seems to have marks carved into it. On closer inspection it reads "Help me".\nThe letters are fresh.',zone:'Mist',territory:339,map:72,x:10.5,y:2,z:-30.25,mapX:11.2,mapY:9.8};
 async function join(call,name){const r=await call('POST','/items/register',{name,memberPassword:'fcpass'});assert.equal(r.status,201);return r}
 
@@ -51,7 +52,7 @@ test('gold left at a sign is paid by the maker, taken once by the first finder, 
   const reg=async n=>{const r=await call('POST','/items/register',{name:n,memberPassword:'fcpass'});return r.token};
   const a=await reg('Mira'),b=await reg('Kael'),c=await reg('Rune');
   const mint=(to,amount)=>call('POST','/bank/admin/mint',{bankPassword:'bankpass',to,amount});
-  const spot={territory:339,map:72,x:1,y:2,z:3,mapX:5,mapY:6,zone:'Mist'};
+  const spot={territory:339,map:72,x:10.5,y:2,z:-30.25,mapX:5,mapY:6,zone:'Mist'};
   assert.equal((await call('POST','/signs',{...spot,name:'Treasure',description:'Dig here',gold:50},a)).status,409);   // not enough gold
   await mint('Mira',100);
   assert.equal((await call('POST','/signs',{...spot,name:'Treasure',description:'Dig here',gold:-5},a)).status,400);
@@ -69,4 +70,21 @@ test('gold left at a sign is paid by the maker, taken once by the first finder, 
   const third=await call('POST','/signs',{...spot,name:'Third',description:'x',gold:10},a);
   assert.equal((await call('POST','/signs/admin/delete',{adminPassword:'dmpass',signId:third.sign.id})).status,200);
   assert.equal((await call('GET','/bank/me',undefined,a)).gold,40);
+});
+
+test('signs far away are only counted by zone and cannot be read or emptied from a distance',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
+  stand(HERE);
+  await call('POST','/bank/admin/mint',{bankPassword:'bankpass',to:'Mira',amount:50});
+  const s=(await call('POST','/signs',{...spot,gold:20},a.token)).sign;
+  stand({territory:339,x:40,y:2,z:-30.25});
+  let list=await call('GET','/signs',undefined,b.token);assert.equal(list.signs.length,1);assert.equal(list.elsewhere,0);
+  assert.equal((await call('GET','/signs/'+s.id,undefined,b.token)).status,403);
+  stand({territory:12,x:0,y:0,z:0});
+  list=await call('GET','/signs',undefined,b.token);assert.equal(list.signs.length,0);assert.deepEqual(list.zones,[{zone:'Mist',count:1}]);
+  assert.equal((await call('POST','/signs/'+s.id+'/claim',{},b.token)).status,403);
+  assert.equal((await call('GET','/signs',undefined,a.token)).signs.length,1);        // the maker sees their own from anywhere
+  assert.equal((await call('GET','/signs/'+s.id,undefined,a.token)).status,200);
+  stand(HERE);
+  assert.equal((await call('POST','/signs/'+s.id+'/claim',{},b.token)).claimed,20);
 });
