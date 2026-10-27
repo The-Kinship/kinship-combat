@@ -2,6 +2,7 @@
 // Quests: an Advocate writes a quest as ordered steps; players talk to targeted NPCs and the server moves them along.
 // Step types: talk (the NPC speaks), give (hand over an Advocate-made item, which is used up), receive (the NPC gives an item).
 import { fail } from './engine.mjs';
+import { roomOf } from './nearby.mjs';
 import { randomInt } from 'node:crypto';
 import { who, rand, str, nameKey, itemFields, inventory, ownerSlots, CAP, STACK } from './items.mjs';
 import { applyStatus, bonus, rollBonuses, checkRoom, findActive, removeByName } from './status-core.mjs';
@@ -53,7 +54,7 @@ function place(d) {
   if (!d || typeof d !== 'object') fail('A step that happens at a spot needs a location. Stand there and use "Use this location".');
   if (!Number.isInteger(d.territory) || d.territory < 0 || d.territory > 65535) fail('That zone is not valid.');
   if (!Number.isInteger(d.map) || d.map < 0 || d.map > 1000000) fail('That map is not valid.');
-  return { zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
+  return { room: roomOf(d.room), zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
 }
 
 function steps(list) {

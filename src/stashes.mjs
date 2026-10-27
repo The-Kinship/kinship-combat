@@ -4,17 +4,17 @@
 import { fail } from './engine.mjs';
 import { who, rand, str, inventory, stackViews, ownerRows, stacks, fits, unitRow, groupIds, CAP, STACK } from './items.mjs';
 import { amountOf, spend, earn, MAX_BALANCE } from './bank.mjs';
-import { positionOf, isNear, mustBeNear, zoneCounts, NEARBY } from './nearby.mjs';
+import { roomOf, positionOf, isNear, mustBeNear, zoneCounts, NEARBY } from './nearby.mjs';
 
 const STASH_CAP = 20, MAX_PER_MEMBER = 3, MAX_STASHES = 300;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
 function place(d) {
   if (!Number.isInteger(d.territory) || d.territory < 0 || d.territory > 65535) fail('That zone is not valid.');
   if (!Number.isInteger(d.map) || d.map < 0 || d.map > 1000000) fail('That map is not valid.');
-  return { zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
+  return { room: roomOf(d.room), zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
 }
 const SELECT = "SELECT s.*, m.name AS owner_name, (SELECT count(*) FROM items WHERE owner_id = 's' || s.id) AS count FROM stashes s LEFT JOIN members m ON m.id = s.owner_id";
-const sv = (r, meId) => ({ id: r.id, name: r.name, zone: r.zone, territory: r.territory, map: r.map_id, x: r.x, y: r.y, z: r.z, mapX: r.map_x, mapY: r.map_y, ownerName: r.owner_name || '(removed)', mine: r.owner_id === meId, isPrivate: !!r.is_private, count: r.count, gold: r.gold || 0, capacity: STASH_CAP });
+const sv = (r, meId) => ({ id: r.id, name: r.name, zone: r.zone, territory: r.territory, room: r.room || '', map: r.map_id, x: r.x, y: r.y, z: r.z, mapX: r.map_x, mapY: r.map_y, ownerName: r.owner_name || '(removed)', mine: r.owner_id === meId, isPrivate: !!r.is_private, count: r.count, gold: r.gold || 0, capacity: STASH_CAP });
 
 async function open(db, id, me, pos) {
   const r = await db.prepare(SELECT + ' WHERE s.id = ?').bind(id).first();
@@ -52,8 +52,8 @@ export async function handleStashes(request, db, path, { json, input: readBody, 
     if ((await db.prepare('SELECT count(*) AS total FROM stashes WHERE owner_id = ?').bind(me.id).first()).total >= MAX_PER_MEMBER) fail(`You can have ${MAX_PER_MEMBER} stashes. Delete one first.`, 409);
     if ((await db.prepare('SELECT count(*) AS total FROM stashes').first()).total >= MAX_STASHES) fail('The stash system is full.', 503);
     const id = rand(6);
-    await db.prepare('INSERT INTO stashes (id, owner_id, name, zone, territory, map_id, x, y, z, map_x, map_y, is_private, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(id, me.id, name, p.zone, p.territory, p.map, p.x, p.y, p.z, p.mapX, p.mapY, d.isPrivate === true ? 1 : 0, new Date().toISOString()).run();
+    await db.prepare('INSERT INTO stashes (id, owner_id, name, zone, territory, map_id, x, y, z, map_x, map_y, is_private, created_at, room) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(id, me.id, name, p.zone, p.territory, p.map, p.x, p.y, p.z, p.mapX, p.mapY, d.isPrivate === true ? 1 : 0, new Date().toISOString(), p.room).run();
     return answer(json, db, id, me, pos(), 201);
   }
 
@@ -73,7 +73,7 @@ export async function handleStashes(request, db, path, { json, input: readBody, 
     const priv = d.isPrivate === undefined ? stash.is_private : (d.isPrivate === true ? 1 : 0);
     if (d.territory !== undefined) {
       const p = place(d);
-      await db.prepare('UPDATE stashes SET name=?, is_private=?, zone=?, territory=?, map_id=?, x=?, y=?, z=?, map_x=?, map_y=? WHERE id=?').bind(name, priv, p.zone, p.territory, p.map, p.x, p.y, p.z, p.mapX, p.mapY, id).run();
+      await db.prepare('UPDATE stashes SET name=?, is_private=?, zone=?, territory=?, map_id=?, x=?, y=?, z=?, map_x=?, map_y=?, room=? WHERE id=?').bind(name, priv, p.zone, p.territory, p.map, p.x, p.y, p.z, p.mapX, p.mapY, p.room, id).run();
     } else await db.prepare('UPDATE stashes SET name=?, is_private=? WHERE id=?').bind(name, priv, id).run();
     return answer(json, db, id, me, pos());
   }
