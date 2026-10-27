@@ -110,7 +110,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     await rate(db, 'items-register:' + ip, 10);
     const data = await input(request); checkMember(data.memberPassword);
     const name = str(data.name, 'Your name', 40); if (name.length < 2) fail('Your name must be at least 2 characters.');
-    if ((await db.prepare('SELECT count(*) AS total FROM members').first()).total >= MAX_MEMBERS) fail('The item system is full.', 503);
+    if ((await db.prepare('SELECT count(*) AS total FROM members').first()).total >= MAX_MEMBERS) fail('The RP system is full.', 503);
     if (await db.prepare('SELECT id FROM members WHERE name_key = ?').bind(nameKey(name)).first()) fail('That name is already registered. If it is yours, use your recovery code.', 409);
     const token = rand(24), id = rand(8), recovery = rand(6).toUpperCase();
     await db.prepare('INSERT INTO members (id, name, name_key, token_hash, recovery_hash, created_at) VALUES (?,?,?,?,?,?)').bind(id, name, nameKey(name), sha(token), sha(recovery), new Date().toISOString()).run();
@@ -156,7 +156,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
         if (!to) fail('No member has that name.', 404);
         owner = to.id; label = `${to.name}'s inventory`; cap = CAPACITY;
       }
-      if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total + copies > MAX_ITEMS) fail('The item system is full.', 503);
+      if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total + copies > MAX_ITEMS) fail('The RP system is full.', 503);
       const made = [];
       for (let i = 0; i < copies; i++) {
         made.push(rand(8));
@@ -213,10 +213,10 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
   if (post && path === '/items') {
     await rate(db, 'items-create:' + me.id, 30);
     const body = await input(request), f = itemFields(body), recipe = recipeJson(body);
-    if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The item system is full.', 503);
+    if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The RP system is full.', 503);
     const qty = body.quantity === undefined ? 1 : body.quantity;
     if (!Number.isInteger(qty) || qty < 1 || qty > 100) fail('Quantity must be a whole number from 1 to 100.');
-    if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total + qty > MAX_ITEMS) fail('The item system is full.', 503);
+    if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total + qty > MAX_ITEMS) fail('The RP system is full.', 503);
     const made = [];
     for (let n = 0; n < qty; n++) {
       const id = rand(8);
@@ -255,7 +255,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       if (row) picked.push(row); else missing.push(name);
     }
     if (missing.length) fail(`You still need ${missing.join(missing.length > 2 ? ', ' : ' and ')} to combine this.`, 409);
-    if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS + picked.length) fail('The item system is full.', 503);
+    if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS + picked.length) fail('The RP system is full.', 503);
     for (const p of picked) await purge(db, p.id);
     await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .bind(rand(8), me.id, item.creator_id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString()).run();
