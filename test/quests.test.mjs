@@ -113,7 +113,7 @@ test('a step can need a status, use it up, and give one; a full status list stop
   r=await talk('Priest');assert.equal(r.results[0].ok,true);assert.equal(r.results[0].statusGained,'Blessed');
   const have=(await call('GET','/statuses',undefined,a.token)).statuses.find(s=>s.name==='Blessed');assert.ok(have.secondsLeft>1100&&have.secondsLeft<=1200);
   db.sqlite.prepare("UPDATE statuses SET expires_at = ? WHERE name = 'Blessed'").run(new Date(Date.now()-1000).toISOString());   // it ran out
-  r=await talk('Guard');assert.equal(r.results[0].ok,false);assert.equal(r.results[0].text,'The guard sneers at you.');
+  r=await talk('Guard');assert.equal(r.results[0].ok,false);assert.equal(r.results[0].text,'The guard sneers at you.\n\nRequires status: Blessed');
   assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,1);
   db.sqlite.prepare("DELETE FROM statuses WHERE name = 'Blessed'").run();
   await call('POST','/statuses/self',blessed,a.token);
@@ -188,7 +188,7 @@ test('a fight at a spot starts by standing there, needs its status, and a full b
   const id=(await admin('save',{title:'Ambush',steps:[{type:'fight',npc:'Bandit',text:'He yields.',place:spot,needs:'Armed',needText:'You have no weapon.',fight:{npcHp:1,npcDie:2,playerHp:99,playerDie:2,playerBonus:5},gift:{name:'Loot',icon:'game:20001'}}]})).id;
   await admin('assign',{questId:id,to:'Mira'});
   assert.equal((await call('POST','/quests/fight/start',{territory:1},a.token)).fight,null);              // wrong zone
-  let r=await call('POST','/quests/fight/start',{territory:339},a.token);assert.equal(r.fight,null);assert.equal(r.text,'You have no weapon.');
+  let r=await call('POST','/quests/fight/start',{territory:339},a.token);assert.equal(r.fight,null);assert.equal(r.text,'You have no weapon.\n\nRequires status: Armed');
   await call('POST','/statuses/self',{name:'Armed',icon:'game:10205',description:''},a.token);
   r=await call('POST','/quests/fight/start',{territory:339},a.token);assert.equal(r.fight.status,'active');
   for(let i=0;i<10;i++)await call('POST','/items',{name:'Junk'+i,icon:'game:20001'},a.token);
