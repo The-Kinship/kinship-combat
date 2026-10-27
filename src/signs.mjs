@@ -58,12 +58,11 @@ export async function handleSigns(request, db, path, { json, input, rate, ip, ch
   if (!post) fail('Endpoint not found.', 404);
   if (route === 'claim') {
     await rate(db, 'sign-claim:' + me.id, 20);
-    if (row.owner_id === me.id) fail('This is your own sign. Delete it to take your gold back.', 409);
     const amount = row.gold || 0;
     if (amount <= 0) fail('There is nothing here to take.', 409);
     const grab = await db.prepare('UPDATE signs SET gold = 0 WHERE id = ? AND gold = ?').bind(id, amount).run();
     if (grab.meta.changes !== 1) fail('Someone got here first.', 409);
-    if (!(await earn(db, me.id, amount, `Found at the sign ${row.name}`))) {
+    if (!(await earn(db, me.id, amount, row.owner_id === me.id ? `Taken back from ${row.name}` : `Found at the sign ${row.name}`))) {
       await db.prepare('UPDATE signs SET gold = gold + ? WHERE id = ?').bind(amount, id).run();
       fail('You cannot carry that much gold.', 409);
     }
