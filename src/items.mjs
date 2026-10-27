@@ -3,6 +3,7 @@
 // Items never touch the game. They only exist inside the plugin.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { fail } from './engine.mjs';
+import { earn } from './bank.mjs';
 import { applyStatus, checkRoom, findActive, removeByName } from './status-core.mjs';
 
 const CAPACITY = 10, MAX_MEMBERS = 300, MAX_ITEMS = 3000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
@@ -143,9 +144,11 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     }
     if (path === '/items/admin/delete-stash') {
       const sid = str(data.stashId, 'Stash', 20);
+      const gone = await db.prepare('SELECT owner_id, name, gold FROM stashes WHERE id = ?').bind(sid).first();
       await db.prepare("DELETE FROM items WHERE owner_id = 's' || ?").bind(sid).run();
       const r = await db.prepare('DELETE FROM stashes WHERE id = ?').bind(sid).run();
       if (r.meta.changes !== 1) fail('That stash no longer exists.', 404);
+      if (gone && gone.gold > 0) await earn(db, gone.owner_id, gone.gold, `Returned from ${gone.name}`, true);
       return json({ deleted: true });
     }
     if (path === '/items/admin/delete') {

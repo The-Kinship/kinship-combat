@@ -4,9 +4,10 @@
 import { fail } from './engine.mjs';
 import { who, str, nameKey } from './items.mjs';
 
-const MAX_AMOUNT = 1000000, MAX_BALANCE = 1000000000, LOG_CAP = 5000;
-const amountOf = v => { if (!Number.isInteger(v) || v < 1 || v > MAX_AMOUNT) fail(`The amount must be a whole number from 1 to ${MAX_AMOUNT.toLocaleString('en-US')}.`); return v; };
-async function note(db, memberId, delta, text) {
+export const MAX_AMOUNT = 1000000, MAX_BALANCE = 1000000000;
+const LOG_CAP = 5000;
+export const amountOf = v => { if (!Number.isInteger(v) || v < 1 || v > MAX_AMOUNT) fail(`The amount must be a whole number from 1 to ${MAX_AMOUNT.toLocaleString('en-US')}.`); return v; };
+export async function note(db, memberId, delta, text) {
   await db.prepare('INSERT INTO gold_log (member_id, delta, note, created_at) VALUES (?,?,?,?)').bind(memberId, delta, text, new Date().toISOString()).run();
   await db.prepare('DELETE FROM gold_log WHERE id <= (SELECT max(id) - ? FROM gold_log)').bind(LOG_CAP).run();
 }
@@ -14,7 +15,24 @@ async function history(db, id) {
   const { results } = await db.prepare('SELECT delta, note, created_at FROM gold_log WHERE member_id = ? ORDER BY id DESC LIMIT 15').bind(id).all();
   return results.map(r => ({ delta: r.delta, note: r.note, at: r.created_at }));
 }
-const balance = async (db, id) => (await db.prepare('SELECT gold FROM members WHERE id = ?').bind(id).first())?.gold ?? 0;
+export const balance = async (db, id) => (await db.prepare('SELECT gold FROM members WHERE id = ?').bind(id).first())?.gold ?? 0;
+
+/** Takes gold out of a member's purse. False if they do not have it. */
+export async function spend(db, memberId, amount, text) {
+  const r = await db.prepare('UPDATE members SET gold = gold - ? WHERE id = ? AND gold >= ?').bind(amount, memberId, amount).run();
+  if (r.meta.changes !== 1) return false;
+  await note(db, memberId, -amount, text);
+  return true;
+}
+/** Adds gold to a member's purse, or returns false when it would go over the cap. Pass force to give it back no matter what. */
+export async function earn(db, memberId, amount, text, force = false) {
+  const r = force
+    ? await db.prepare('UPDATE members SET gold = gold + ? WHERE id = ?').bind(amount, memberId).run()
+    : await db.prepare('UPDATE members SET gold = gold + ? WHERE id = ? AND gold + ? <= ?').bind(amount, memberId, amount, MAX_BALANCE).run();
+  if (r.meta.changes !== 1) return false;
+  await note(db, memberId, amount, text);
+  return true;
+}
 
 export async function handleBank(request, db, path, { json, input, rate, ip, checkBank }) {
   const post = request.method === 'POST';

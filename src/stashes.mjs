@@ -3,6 +3,7 @@
 // Position rules (not in an instance, standing close enough) are checked by the plugin. The server keeps the data and the item rules.
 import { fail } from './engine.mjs';
 import { who, rand, str, view, inventory, CAP, ITEM_SELECT } from './items.mjs';
+import { amountOf, spend, earn, MAX_BALANCE } from './bank.mjs';
 
 const STASH_CAP = 20, MAX_PER_MEMBER = 3, MAX_STASHES = 300;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
@@ -12,7 +13,7 @@ function place(d) {
   return { zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
 }
 const SELECT = "SELECT s.*, m.name AS owner_name, (SELECT count(*) FROM items WHERE owner_id = 's' || s.id) AS count FROM stashes s LEFT JOIN members m ON m.id = s.owner_id";
-const sv = (r, meId) => ({ id: r.id, name: r.name, zone: r.zone, territory: r.territory, map: r.map_id, x: r.x, y: r.y, z: r.z, mapX: r.map_x, mapY: r.map_y, ownerName: r.owner_name || '(removed)', mine: r.owner_id === meId, isPrivate: !!r.is_private, count: r.count, capacity: STASH_CAP });
+const sv = (r, meId) => ({ id: r.id, name: r.name, zone: r.zone, territory: r.territory, map: r.map_id, x: r.x, y: r.y, z: r.z, mapX: r.map_x, mapY: r.map_y, ownerName: r.owner_name || '(removed)', mine: r.owner_id === meId, isPrivate: !!r.is_private, count: r.count, gold: r.gold || 0, capacity: STASH_CAP });
 
 async function open(db, id, me) {
   const r = await db.prepare(SELECT + ' WHERE s.id = ?').bind(id).first();
@@ -46,7 +47,7 @@ export async function handleStashes(request, db, path, { json, input, rate }) {
     return answer(json, db, id, me, 201);
   }
 
-  const m = path.match(/^\/stashes\/([a-f0-9]{12})(?:\/(update|delete|put|take))?$/);
+  const m = path.match(/^\/stashes\/([a-f0-9]{12})(?:\/(update|delete|put|take|put-gold|take-gold))?$/);
   if (!m) fail('Endpoint not found.', 404);
   const [, id, route] = m;
 
@@ -67,9 +68,27 @@ export async function handleStashes(request, db, path, { json, input, rate }) {
   }
   if (route === 'delete') {
     if (stash.owner_id !== me.id) fail('Only the owner can delete a stash.', 403);
-    if (stash.count > 0) fail('Take everything out of the stash first.', 409);
+    if (stash.count > 0 || stash.gold > 0) fail('Take everything out of the stash first.', 409);
     await db.prepare('DELETE FROM stashes WHERE id = ?').bind(id).run();
     return json({ deleted: true });
+  }
+  if (route === 'put-gold' || route === 'take-gold') {
+    await rate(db, 'stash-gold:' + me.id, 30);
+    const amount = amountOf((await input(request)).amount);
+    if (route === 'put-gold') {
+      if (stash.gold + amount > MAX_BALANCE) fail('That stash cannot hold that much gold.', 409);
+      if (!(await spend(db, me.id, amount, `Put in ${stash.name}`))) fail('You do not have that much gold.', 409);
+      const r = await db.prepare('UPDATE stashes SET gold = gold + ? WHERE id = ? AND gold + ? <= ?').bind(amount, id, amount, MAX_BALANCE).run();
+      if (r.meta.changes !== 1) { await earn(db, me.id, amount, `Returned from ${stash.name}`, true); fail('That stash cannot hold that much gold.', 409); }
+    } else {
+      const r = await db.prepare('UPDATE stashes SET gold = gold - ? WHERE id = ? AND gold >= ?').bind(amount, id, amount).run();
+      if (r.meta.changes !== 1) fail(`The stash only has ${stash.gold} gold.`, 409);
+      if (!(await earn(db, me.id, amount, `Took from ${stash.name}`))) {
+        await db.prepare('UPDATE stashes SET gold = gold + ? WHERE id = ?').bind(amount, id).run();
+        fail('You cannot carry that much gold.', 409);
+      }
+    }
+    return answer(json, db, id, me);
   }
   await rate(db, 'stash-move:' + me.id, 60);
   const d = await input(request), itemId = str(d.itemId, 'Item', 20), key = 's' + id;
