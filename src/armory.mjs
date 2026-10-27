@@ -2,7 +2,7 @@
 // Armory: wearable items. A worn item is owned by 'w' + the wearer's id, so it is out of the bag and cannot be given, stashed or mailed.
 // Gear can break: the timer starts the first time it is worn and keeps running. Broken gear becomes a plain "Broken" item.
 import { fail } from './engine.mjs';
-import { who, str, view, ownerRows, fits, unitRow, inventory, CAP } from './items.mjs';
+import { who, str, nameKey, view, ownerRows, fits, unitRow, inventory, CAP } from './items.mjs';
 
 export const SLOTS = ['helm', 'chest', 'cloak', 'legs', 'feet', 'ring1', 'ring2', 'necklace', 'weapon'];
 export const BROKEN_TEXT = 'It seems to be broken and holds no use anymore.';
@@ -43,6 +43,12 @@ export async function handleArmory(request, db, path, { json, input, rate }) {
     return json({ broke: results.map(n => n.text) });
   }
   if (!post && path === '/armory') return json(await state(db, me));
+  if (!post && path === '/armory/of') {   // anyone in the RP system can look at what another character is wearing
+    const name = new URL(request.url).searchParams.get('name') || '';
+    const target = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(String(name).slice(0, 40))).first();
+    if (!target) fail('That character has not joined the RP system.', 404);
+    return json({ name: target.name, ...(await state(db, target)) });
+  }
   if (!post) fail('Endpoint not found.', 404);
   await rate(db, 'armory:' + me.id, 60);
   const d = await input(request);
