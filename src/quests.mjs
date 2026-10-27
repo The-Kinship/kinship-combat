@@ -25,6 +25,7 @@ function fightSpec(f) {
     playerHp: whole(f.playerHp, 'Player HP', 1, 999, 30), playerDie: whole(f.playerDie, 'Player die', 2, 100, 8), playerBonus: whole(f.playerBonus, 'Player bonus', -50, 50, 0) };
 }
 const SPOT = ['look', 'listen', 'search'];
+const needMsg = st => `${st.needText || 'You are not ready for this yet.'}\n\nRequires status: ${st.needs}`;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
 function place(d) {
   if (!d || typeof d !== 'object') fail('A step that happens at a spot needs a location. Stand there and use "Use this location".');
@@ -79,7 +80,7 @@ async function runStep(db, me, r, list, st) {
   const claim = () => db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ?').bind(last ? 1 : 0, now, me.id, r.quest_id, r.step).run();
   const revert = () => db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, me.id, r.quest_id).run();
   let held = null, gained = [];
-  if (st.needs && !(await findActive(db, me.id, st.needs))) return stop(st.needText || 'You are not ready for this yet.');
+  if (st.needs && !(await findActive(db, me.id, st.needs))) return stop(needMsg(st));
   if (st.grants) { try { await checkRoom(db, me.id, st.grants.name); } catch (e) { if (e.status) return stop(e.message); throw e; } }
   if (st.type === 'give') {
     held = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND creator_id = 'dm' AND lower(name) = ? LIMIT 1").bind(me.id, st.item.toLowerCase()).first();
@@ -189,7 +190,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       if (!starting) await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, String(d.questId ?? '')).run();
       return json({ fight: null });
     }
-    if (st.needs && !(await findActive(db, me.id, st.needs))) return json({ fight: null, text: st.needText || 'You are not ready for this yet.' });
+    if (st.needs && !(await findActive(db, me.id, st.needs))) return json({ fight: null, text: needMsg(st) });
     const now = new Date().toISOString(), spec = st.fight;
     let f = await db.prepare('SELECT * FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).first();
     if (f && f.step !== row.step) { await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).run(); f = null; }
