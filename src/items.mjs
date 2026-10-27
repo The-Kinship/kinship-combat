@@ -35,9 +35,10 @@ export function itemFields(data) {
   const stType = data.stType === undefined || data.stType === null ? '' : data.stType;
   if (!['', 'sickness', 'curse'].includes(stType)) fail('A status can be a sickness, a curse, or neither.');
   const stCure = str(data.stCure, 'Cure information', 200, false);
+  const startsQuest = str(data.startsQuest, 'Quest', 20, false);
   const icon = str(data.icon, 'Icon', 80);
   if (!ICON.test(icon)) fail('Choose an icon for the item.');
-  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', cures, consumable: data.consumable === true && useText ? 1 : 0 };
+  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
 }
 // A reagent can name up to three other items it combines with, and say what they make. Stored as JSON: { with: [names], result: itemFields }.
 function recipeJson(data) {
@@ -116,6 +117,10 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     }
     if (path === '/items/admin/grant') {
       const f = itemFields(data), recipe = recipeJson(data);
+      if (f.startsQuest) {
+        if (!f.useText) fail('An item that starts a quest needs an action. Fill in "What happens".');
+        if (!(await db.prepare('SELECT id FROM quests WHERE id = ?').bind(f.startsQuest).first())) fail('That quest no longer exists.', 404);
+      }
       const copies = data.copies === undefined ? 1 : data.copies;
       if (!Number.isInteger(copies) || copies < 1 || copies > 10) fail('Copies must be a whole number from 1 to 10.');
       let owner, label, cap;
@@ -132,8 +137,8 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const have = (await db.prepare('SELECT count(*) AS total FROM items WHERE owner_id = ?').bind(owner).first()).total;
       if (have + copies > cap) fail(`${label} does not have room for ${copies}.`, 409);
       for (let i = 0; i < copies; i++)
-        await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) VALUES (?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-          .bind(rand(8), owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString()).run();
+        await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, starts_quest, created_at) VALUES (?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+          .bind(rand(8), owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString()).run();
       return json({ granted: true, copies }, 201);
     }
     if (path === '/items/admin/delete-stash') {
@@ -247,17 +252,23 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (item.cures && !curing) fail(`You have no ${item.cures} to cure.`, 409);
     if (item.st_name) await checkRoom(db, me.id, item.st_name);
     const held = (await db.prepare('SELECT id, name FROM items WHERE owner_id = ? ORDER BY created_at, id').bind('i' + id).all()).results;
+    const eaten = item.consumable && !item.starts_quest;   // a quest letter stays until the quest is accepted
     const have = (await db.prepare('SELECT count(*) AS total FROM items WHERE owner_id = ?').bind(me.id).first()).total;
-    if (have - (item.consumable ? 1 : 0) - (key && item.requires_consume ? 1 : 0) + held.length > CAPACITY) fail('Not enough room in your inventory for what is inside. Make some space first.', 409);
+    if (have - (eaten ? 1 : 0) - (key && item.requires_consume ? 1 : 0) + held.length > CAPACITY) fail('Not enough room in your inventory for what is inside. Make some space first.', 409);
     if (key && item.requires_consume) await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(key.id, me.id).run();
     if (held.length) await db.prepare('UPDATE items SET owner_id = ? WHERE owner_id = ?').bind(me.id, 'i' + id).run();
-    if (item.consumable) {
+    if (eaten) {
       const r = await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(id, me.id).run();
       if (r.meta.changes !== 1) fail('That item is already gone.', 409);
     }
     if (item.cures) await removeByName(db, me.id, item.cures);
     if (item.st_name) await applyStatus(db, me.id, { name: item.st_name, icon: item.st_icon || item.icon, description: item.st_desc, isDebuff: !!item.st_debuff, minutes: item.st_minutes, type: item.st_type || '', cure: item.st_cure || '', sourceId: item.creator_id });
-    return json({ text: item.use_text, statusGained: item.st_name || '', statusCured: curing ? curing.name : '', consumed: !!item.consumable, gained: held.map(h => h.name), keyUsed: key && item.requires_consume ? item.requires : '', items: await inventory(db, me.id) });
+    let offer = null;
+    if (item.starts_quest && item.creator_id === 'dm') {
+      const q = await db.prepare('SELECT id, title, intro FROM quests WHERE id = ?').bind(item.starts_quest).first();
+      if (q && !(await db.prepare('SELECT 1 AS x FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(me.id, q.id).first())) offer = { questId: q.id, title: q.title, intro: q.intro, itemId: id };
+    }
+    return json({ offer, text: item.use_text, statusGained: item.st_name || '', statusCured: curing ? curing.name : '', consumed: !!item.consumable, gained: held.map(h => h.name), keyUsed: key && item.requires_consume ? item.requires : '', items: await inventory(db, me.id) });
   }
   return json({ ok: true, items: await inventory(db, me.id) });
 }

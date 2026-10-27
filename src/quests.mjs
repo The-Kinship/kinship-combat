@@ -103,15 +103,16 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       const { results } = await db.prepare('SELECT * FROM quests ORDER BY created_at, rowid').all();
       const prog = (await db.prepare('SELECT p.quest_id, p.step, p.done, m.name FROM quest_progress p JOIN members m ON m.id = p.member_id ORDER BY m.name_key').all()).results;
       const claims = (await db.prepare('SELECT c.quest_id, c.step, m.name FROM quest_claims c LEFT JOIN members m ON m.id = c.member_id').all()).results;
-      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps),
+      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text,
         players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: !!p.done })),
         claims: claims.filter(c => c.quest_id === q.id).map(c => ({ step: c.step, name: c.name || '(removed)' })) })) });
     }
     if (path === '/quests/admin/save') {
       const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps);
+      const startPlace = d.startPlace ? JSON.stringify(place(d.startPlace)) : '', startText = d.startPlace ? str(d.startText, 'Text at the starting spot', 600) : '';
       if (d.questId) {
         const id = str(d.questId, 'Quest', 20);
-        const r = await db.prepare('UPDATE quests SET title=?, intro=?, steps=? WHERE id=?').bind(title, intro, JSON.stringify(list), id).run();
+        const r = await db.prepare('UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=? WHERE id=?').bind(title, intro, JSON.stringify(list), startPlace, startText, id).run();
         if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
         // A shorter quest finishes anyone who was past the new end.
         await db.prepare('UPDATE quest_progress SET done = 1 WHERE quest_id = ? AND step >= ?').bind(id, list.length).run();
@@ -119,7 +120,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       }
       if ((await db.prepare('SELECT count(*) AS total FROM quests').first()).total >= MAX_QUESTS) fail('There are too many quests. Delete one first.', 409);
       const id = rand(6);
-      await db.prepare('INSERT INTO quests (id, title, intro, steps, created_at) VALUES (?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), new Date().toISOString()).run();
+      await db.prepare('INSERT INTO quests (id, title, intro, steps, start_place, start_text, created_at) VALUES (?,?,?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), startPlace, startText, new Date().toISOString()).run();
       return json({ saved: true, id }, 201);
     }
     if (path === '/quests/admin/delete') {
@@ -155,6 +156,35 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     return json({ quests: results.map(mineView) });
   }
 
+  // Spots where a quest can be picked up. Only the place goes out, never the quest's name or what it says.
+  if (!post && path === '/quests/starts') {
+    const { results } = await db.prepare("SELECT q.id, q.start_place FROM quests q WHERE q.start_place != '' AND NOT EXISTS (SELECT 1 FROM quest_progress p WHERE p.quest_id = q.id AND p.member_id = ?)").bind(me.id).all();
+    return json({ starts: results.map(r => ({ questId: r.id, place: JSON.parse(r.start_place) })) });
+  }
+  if (post && path === '/quests/offer') {
+    await rate(db, 'quest-offer:' + me.id, 60);
+    const d = await input(request);
+    const q = await db.prepare("SELECT id, title, intro, start_text FROM quests WHERE id = ? AND start_place != ''").bind(str(d.questId, 'Quest', 20)).first();
+    if (!q || await db.prepare('SELECT 1 AS x FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(me.id, q.id).first()) return json({ offer: null });
+    return json({ offer: { questId: q.id, title: q.title, intro: q.intro, text: q.start_text } });
+  }
+  if (post && path === '/quests/accept') {
+    await rate(db, 'quest-accept:' + me.id, 30);
+    const d = await input(request), questId = str(d.questId, 'Quest', 20);
+    const q = await db.prepare('SELECT id, start_place FROM quests WHERE id = ?').bind(questId).first();
+    if (!q) fail('That quest is no longer available.', 404);
+    let item = null;
+    if (d.itemId) {
+      item = await db.prepare("SELECT id, consumable FROM items WHERE id = ? AND owner_id = ? AND creator_id = 'dm' AND starts_quest = ?").bind(str(d.itemId, 'Item', 20), me.id, questId).first();
+      if (!item) fail('That item no longer offers this quest.', 409);
+    } else if (!q.start_place) fail('That quest cannot be started that way.', 403);
+    if (await db.prepare('SELECT 1 AS x FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(me.id, questId).first()) fail('You have already taken this up.', 409);
+    if ((await db.prepare('SELECT count(*) AS total FROM quest_progress WHERE member_id = ? AND done = 0').bind(me.id).first()).total >= MAX_ACTIVE) fail(`You already have ${MAX_ACTIVE} quests going.`, 409);
+    const r = await db.prepare('INSERT INTO quest_progress (member_id, quest_id, step, done, updated_at) VALUES (?,?,0,0,?) ON CONFLICT DO NOTHING').bind(me.id, questId, new Date().toISOString()).run();
+    if (r.meta.changes !== 1) fail('You have already taken this up.', 409);
+    if (item && item.consumable) await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(item.id, me.id).run();
+    return json({ accepted: true, items: await inventory(db, me.id) }, 201);
+  }
   if (post && (path === '/quests/talk' || path === '/quests/act')) {
     await rate(db, 'quest-talk:' + me.id, 60);
     const d = await input(request), talking = path === '/quests/talk';
