@@ -25,6 +25,28 @@ function fightSpec(f) {
     playerHp: whole(f.playerHp, 'Player HP', 1, 999, 30), playerDie: whole(f.playerDie, 'Player die', 2, 100, 8), playerBonus: whole(f.playerBonus, 'Player bonus', -50, 50, 0) };
 }
 const SPOT = ['look', 'listen', 'search'];
+// A step can say something different to some people: by the gender on the faction roster (the plugin sends it) or by a status they have.
+// Each variant needs a gender, a status, or both (both must match). The first one that matches wins; otherwise the normal text is used.
+const MAX_VARIANTS = 6;
+const genderOf = v => String(v ?? '').trim().toLowerCase().slice(0, 30);
+function variants(list, at) {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list) || list.length > MAX_VARIANTS) fail(`${at} can have up to ${MAX_VARIANTS} different versions of its text.`);
+  return list.map((v, i) => {
+    if (!v || typeof v !== 'object') fail(`${at} version ${i + 1} is not valid.`);
+    const gender = genderOf(v.gender), status = str(v.status, `${at} version ${i + 1} status`, 30, false);
+    if (!gender && !status) fail(`${at} version ${i + 1} needs a gender or a status to match.`);
+    return { gender, status, text: str(v.text, `${at} version ${i + 1} text`, 600) };
+  });
+}
+async function pickText(db, me, st) {
+  for (const v of st.variants || []) {
+    if (v.gender && v.gender !== me.gender) continue;
+    if (v.status && !(await findActive(db, me.id, v.status))) continue;
+    return v.text;
+  }
+  return st.text;
+}
 const needMsg = st => `${st.needText || 'You are not ready for this yet.'}\n\nRequires status: ${st.needs}`;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
 function place(d) {
@@ -41,6 +63,8 @@ function steps(list) {
     if (!s || typeof s !== 'object' || !TYPES.includes(s.type)) fail(`${at} needs a type.`);
     const spot = SPOT.includes(s.type), fight = s.type === 'fight';
     const out = { type: s.type, npc: spot ? '' : str(s.npc, `${at} character name`, 40), text: str(s.text, `${at} text`, 600), hint: str(s.hint, `${at} hint`, 150, false) };
+    const alt = variants(s.variants, at);
+    if (alt.length) out.variants = alt;
     if (spot || (fight && s.place)) out.place = place(s.place);
     if (fight) out.fight = fightSpec(s.fight);
     const needs = str(s.needs, `${at} required status`, 30, false);
@@ -79,6 +103,7 @@ async function insertGift(db, ownerId, f) {
 // Moves one player past one step: checks what the step needs, hands over or takes items, and keeps first-come finds to one winner.
 async function runStep(db, me, r, list, st) {
   const stop = text => ({ quest: r.title, ok: false, text, finished: false, gained: [] });
+  const said = await pickText(db, me, st);   // chosen before this step changes anything about the player
   const now = new Date().toISOString(), last = r.step + 1 >= list.length;
   const claim = () => db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ?').bind(last ? 1 : 0, now, me.id, r.quest_id, r.step).run();
   const revert = () => db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, me.id, r.quest_id).run();
@@ -111,7 +136,7 @@ async function runStep(db, me, r, list, st) {
   if (st.needs && st.takesNeeded) await removeByName(db, me.id, st.needs);
   let statusGained = '';
   if (st.grants) { await applyStatus(db, me.id, { ...st.grants, sourceId: 'dm' }); statusGained = st.grants.name; }
-  return { quest: r.title, ok: true, text: st.text, finished: last, gained, statusGained };
+  return { quest: r.title, ok: true, text: said, finished: last, gained, statusGained };
 }
 
 export async function handleQuests(request, db, path, { json, input, rate, ip, checkCreate }) {
@@ -182,6 +207,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
   if (post && (path === '/quests/fight/start' || path === '/quests/fight/attack')) {
     await rate(db, 'quest-fight:' + me.id, 90);
     const d = await input(request), starting = path === '/quests/fight/start';
+    me.gender = genderOf(d.gender);
     const { results } = await db.prepare(SELECT_P.replace('ORDER BY', 'AND p.done = 0 ORDER BY')).bind(me.id).all();
     let row = null, list = null, st = null;
     for (const r of results) {
@@ -281,6 +307,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
   if (post && (path === '/quests/talk' || path === '/quests/act')) {
     await rate(db, 'quest-talk:' + me.id, 60);
     const d = await input(request), talking = path === '/quests/talk';
+    me.gender = genderOf(d.gender);
     let npc = '', kind = '', territory = -1;
     if (talking) npc = nameKey(str(d.npc, 'Character', 60));
     else {
