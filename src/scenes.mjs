@@ -34,7 +34,7 @@ function view(scene, member) {
   if (member.role === 'dm') v.members = scene.members.filter(m => m.role !== 'dm').map(({ id, name, role }) => ({ id, name, role }));
   return v;
 }
-const eventsFor = (scene, member, after) => scene.events.filter(e => e.id > after && (!e.to || e.to.includes(member.id))).map(({ id, at, text, ooc }) => ({ id, at, text, ooc }));
+const eventsFor = (scene, member, after) => scene.events.filter(e => e.id > after && (!e.to || e.to.includes(member.id))).map(({ id, at, text, ooc, combat }) => ({ id, at, text, ooc, combat: combat || '' }));
 
 export async function handleScenes(request, db, path, { json, input, rate, ip, checkCreate }) {
   if (request.method === 'POST' && path === '/scenes') {
@@ -73,6 +73,12 @@ export async function handleScenes(request, db, path, { json, input, rate, ip, c
     if (me.role !== 'dm') fail('Only the DM can send popups.', 403);
     await rate(db, 'scene-send:' + me.id, 60);
     const data = await input(request), text = str(data.text, 'Popup text', 300), ooc = str(data.ooc, 'OOC note', 200, false);
+    let combat = '';
+    if (data.combat !== undefined && data.combat !== null && data.combat !== '') {
+      if (typeof data.combat !== 'string' || !/^[A-Fa-f0-9]{18}$/.test(data.combat)) fail('That is not a combat room code.');
+      combat = data.combat.toUpperCase();
+      if (!(await db.prepare('SELECT code FROM rooms WHERE code = ?').bind(combat).first())) fail('That combat room does not exist.', 404);
+    }
     let to = null;
     if (data.to !== undefined && data.to !== null) {
       if (!Array.isArray(data.to) || data.to.length > MAX_MEMBERS) fail('Recipients must be a list of people in the scene.');
@@ -81,7 +87,7 @@ export async function handleScenes(request, db, path, { json, input, rate, ip, c
     }
     const { scene, result } = await mutate(db, code, s => {
       if (to && !to.every(id => s.members.some(m => m.id === id && m.role !== 'dm'))) fail('Choose people who have joined this scene.');
-      s.events.push({ id: s.nextId, at: new Date().toISOString(), text, ooc, to }); s.nextId++;
+      s.events.push({ id: s.nextId, at: new Date().toISOString(), text, ooc, to, combat }); s.nextId++;
       s.events = s.events.slice(-KEEP_EVENTS);
       return { delivered: to ? to.length : s.members.filter(m => m.role !== 'dm').length };
     });
