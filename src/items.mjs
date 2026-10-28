@@ -21,7 +21,10 @@ export function str(value, name, max, required = true) {
   if (typeof value !== 'string' || value.length > max || (required && !value.trim())) fail(`${name} is required and must be at most ${max} characters.`);
   return value.trim();
 }
-export function itemFields(data, allowBonus = false) {
+export async function alphaGear(db) {
+  try { const r = await db.prepare("SELECT value FROM settings WHERE key = 'alpha_gear'").first(); return r?.value === '1'; } catch { return false; }
+}
+export function itemFields(data, allowBonus = false, gearOnly = false) {
   const name = str(data.name, 'Item name', 40), description = str(data.description, 'Description', 300, false), flavor = str(data.flavor, 'Flavor text', 150, false);
   const useText = str(data.useText, 'What happens when used', 400, false);
   let useLabel = str(data.useLabel, 'Use button label', 20, false);
@@ -38,7 +41,7 @@ export function itemFields(data, allowBonus = false) {
   const stType = data.stType === undefined || data.stType === null ? '' : data.stType;
   if (!['', 'sickness', 'curse'].includes(stType)) fail('A status can be a sickness, a curse, or neither.');
   const stCure = str(data.stCure, 'Cure information', 200, false);
-  const stAtk = allowBonus && stName ? bonus(data.stAtk, 'Attack bonus') : 0, stHeal = allowBonus && stName ? bonus(data.stHeal, 'Heal bonus') : 0;   // only Advocates can give a status a roll bonus
+  const stAtk = allowBonus && !gearOnly && stName ? bonus(data.stAtk, 'Attack bonus') : 0, stHeal = allowBonus && !gearOnly && stName ? bonus(data.stHeal, 'Heal bonus') : 0;   // only Advocates can give a status a roll bonus
   const startsQuest = str(data.startsQuest, 'Quest', 20, false);
   const wearSlot = data.wearSlot === undefined || data.wearSlot === null ? '' : data.wearSlot;
   if (!WEAR_SLOTS.includes(wearSlot)) fail('Choose where the item is worn, or leave it as not wearable.');
@@ -50,7 +53,7 @@ export function itemFields(data, allowBonus = false) {
   return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, wearSlot, lifespanDays, gearAtk, gearHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
 }
 // A reagent can name up to three other items it combines with, and say what they make. Stored as JSON: { with: [names], result: itemFields }.
-function recipeJson(data, allowBonus = false) {
+function recipeJson(data, allowBonus = false, gearOnly = false) {
   if (!Array.isArray(data.with) || data.with.length === 0) return '';
   if (data.with.length > MAX_WITH) fail(`A recipe can use up to ${MAX_WITH} other items.`);
   const names = data.with.map(n => str(n, 'Reagent name', 40)), keys = names.map(nameKey);
@@ -59,7 +62,7 @@ function recipeJson(data, allowBonus = false) {
   if (!data.result || typeof data.result !== 'object' || Array.isArray(data.result)) fail('Say what the combination makes.');
   const failChance = data.failChance === undefined || data.failChance === null ? 0 : data.failChance;
   if (!Number.isInteger(failChance) || failChance < 0 || failChance > 99) fail('The chance of failing must be a whole number from 0 to 99.');
-  return JSON.stringify({ with: names, result: itemFields(data.result, allowBonus), failChance });
+  return JSON.stringify({ with: names, result: itemFields(data.result, allowBonus, gearOnly), failChance });
 }
 const asView = f => ({ name: f.name, icon: f.icon, description: f.description, flavor: f.flavor, useLabel: f.useLabel, useText: f.useText, consumable: !!f.consumable, requires: f.requires, requiresConsume: !!f.requiresConsume, stName: f.stName, stDesc: f.stDesc, stIcon: f.stIcon, stDebuff: !!f.stDebuff, stMinutes: f.stMinutes, stType: f.stType, stCure: f.stCure, stAtk: f.stAtk, stHeal: f.stHeal, cures: f.cures });
 export const view = (row, meId) => {
@@ -251,14 +254,14 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
 
   const me = await who(db, request);
 
-  if (!post && path === '/items/me') return json({ memberId: me.id, name: me.name, gold: me.gold, capacity: CAPACITY, items: await inventory(db, me.id) });
+  if (!post && path === '/items/me') return json({ memberId: me.id, name: me.name, gold: me.gold, capacity: CAPACITY, alphaGear: await alphaGear(db), items: await inventory(db, me.id) });
   if (!post && path === '/items/members') {
     const { results } = await db.prepare('SELECT name FROM members WHERE id != ? ORDER BY name_key').bind(me.id).all();
     return json({ members: results.map(r => r.name) });
   }
   if (post && path === '/items') {
     await rate(db, 'items-create:' + me.id, 30);
-    const body = await input(request), f = itemFields(body), recipe = recipeJson(body);
+    const body = await input(request), alpha = await alphaGear(db), f = itemFields(body, alpha, true), recipe = recipeJson(body, alpha, true);
     if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The RP system is full.', 503);
     const qty = body.quantity === undefined ? 1 : body.quantity;
     if (!Number.isInteger(qty) || qty < 1 || qty > 100) fail('Quantity must be a whole number from 1 to 100.');
@@ -286,7 +289,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
 
   if (route === 'update') {
     if (item.creator_id !== me.id) fail('Only the person who made an item can change it.', 403);
-    const body = await input(request), f = itemFields(body), recipe = recipeJson(body);
+    const body = await input(request), alpha = await alphaGear(db), f = itemFields(body, alpha, true), recipe = recipeJson(body, alpha, true);
     for (const unit of await groupIds(db, me.id, id))
       await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, st_atk=?, st_heal=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.stAtk, f.stHeal, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
     await db.prepare('UPDATE items SET wear_slot=?, gear_atk=?, gear_heal=?, lifespan_days=? WHERE id=? AND owner_id=? AND worn_at IS NULL').bind(f.wearSlot, f.gearAtk, f.gearHeal, f.lifespanDays, unit, me.id).run();   // gear settings can't change once it has been worn

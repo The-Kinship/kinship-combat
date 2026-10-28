@@ -145,7 +145,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
 
   if (post && path.startsWith('/quests/admin/')) {
     await rate(db, 'quest-admin:' + ip, 60);
-    const d = await input(request); checkCreate(d.adminPassword);
+    const d = await input(request), level = checkCreate(d.adminPassword);
     if (path === '/quests/admin/list') {
       const { results } = await db.prepare('SELECT * FROM quests ORDER BY created_at, rowid').all();
       const prog = (await db.prepare('SELECT p.quest_id, p.step, p.done, m.name FROM quest_progress p JOIN members m ON m.id = p.member_id ORDER BY m.name_key').all()).results;
@@ -156,6 +156,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     }
     if (path === '/quests/admin/save') {
       const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps);
+      if (level === 'scene') for (const s of list) if (s.grants) { s.grants.atk = 0; s.grants.heal = 0; }   // roll bonuses on a status are for Advocates (creation password) only
       const startPlace = d.startPlace ? JSON.stringify(place(d.startPlace)) : '', startText = d.startPlace ? str(d.startText, 'Text at the starting spot', 600) : '';
       if (d.questId) {
         const id = str(d.questId, 'Quest', 20);

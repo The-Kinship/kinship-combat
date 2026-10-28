@@ -3,15 +3,24 @@
 // code, same profile); every other character is removed with everything of theirs; all items, stashes, signs, mail, statuses, quest progress,
 // gold history, duels, reports and encounters are cleared. Marks and bans are kept. Quests are only cleared if asked. Creation password only.
 import { fail } from './engine.mjs';
-import { str, removeMemberData } from './items.mjs';
+import { str, removeMemberData, alphaGear } from './items.mjs';
 import { findMember } from './lookup.mjs';
 
-export const KEEP_TABLES = ['members', 'players', 'profiles', 'marks', 'bans'];
+export const KEEP_TABLES = ['members', 'players', 'profiles', 'marks', 'bans', 'settings'];
 export const OPTIONAL_TABLES = ['quests'];
 export const WIPE_TABLES = ['items', 'stashes', 'signs', 'gold_log', 'statuses', 'quest_progress', 'quest_claims', 'quest_fights', 'mails', 'worn', 'gear_notices', 'duels', 'reports', 'rooms', 'scenes', 'rate_limits'];
 export const CONFIRM = 'WIPE EVERYTHING';
 
 export async function handleWipe(request, db, path, { json, input, rate, ip, checkCreate }) {
+  if (request.method === 'POST' && (path === '/system/admin/alpha' || path === '/system/admin/alpha-get')) {
+    await rate(db, 'alpha-admin:' + ip, 20);
+    const a = await input(request); checkCreate(a.adminPassword);
+    if (path === '/system/admin/alpha') {
+      if (typeof a.on !== 'boolean') fail('Say whether alpha mode is on or off.');
+      await db.prepare("INSERT INTO settings (key, value) VALUES ('alpha_gear', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(a.on ? '1' : '0').run();
+    }
+    return json({ alphaGear: await alphaGear(db) });
+  }
   if (request.method !== 'POST' || (path !== '/system/admin/wipe' && path !== '/system/admin/wipe-check')) fail('Endpoint not found.', 404);
   await rate(db, 'wipe-admin:' + ip, 10);
   const d = await input(request); checkCreate(d.adminPassword);
