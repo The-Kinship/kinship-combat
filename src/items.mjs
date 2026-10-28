@@ -91,7 +91,7 @@ export const view = (row, meId) => {
   return v;
 };
 // Labels the SMs can put on a registered character. They show at the bottom of that character's roster entry and profile card.
-export const TAGS = ['Harbinger', 'Advocate', 'SM', 'Banker', 'Onyx', 'Vanguard', 'Life Watch', 'Ember'];
+export const TAGS = ['Harbinger', 'Advocate', 'SM', 'Banker', 'Onyx', 'Vanguard', 'Life Watch', 'Ember', 'Kin', 'Alt'];
 export const tagList = s => TAGS.filter(t => String(s || '').split(',').includes(t));
 export async function who(db, request) {
   const token = (request.headers.get('authorization') || '').replace(/^Bearer /, '');
