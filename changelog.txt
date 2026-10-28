@@ -1,0 +1,12 @@
+0.54.0: Group quests. When you are in a party, a quest step completed by one person moves the quest on for everyone in the party who has the same quest on the same step, with the rewards, and a pop-up tells them.
+0.53.4: Anyone can now start a party (no password). Combat encounters still need the SM password.
+0.53.3: The Scenes tab is now called Party (same thing: join with a code, popups, group RP). Groundwork for doing quests together.
+0.53.2: New Pause button at the top of the Kinship window (also in the top bar right-click menu). While paused the plugin makes no server requests at all. Press it again to turn the plugin back on.
+0.53.1: The plugin now pauses its background server checks while you are standing still and not using the mouse for 3 minutes, and picks up again the moment you move. Fewer requests while AFK.
+0.53.0: New "World items": leave a copy of an item out in the world (a herb by a tree, a cookie on a table) for anyone to pick up. Choose once, back after a wait, or always. Find them on the new World tab.
+0.52.5: Alpha only: sickness diagnosing and curse reading are now also on the Status tab, so testers can use them without the sect pages.
+0.52.4: Failed sickness diagnoses and curse readings now give a random message each time instead of the same one.
+0.52.3: Fixed a quest area step that could be missed if another request was running when you walked in, and area notices no longer ask the server repeatedly after an error.
+0.52.2: Quest area notices and "Walk into an area" steps now react faster. Notice text is loaded as you approach, so it shows the moment you walk in.
+0.52.1: The plugin page now shows a fuller description and this changelog.
+0.52.0: Quests can now react to where you walk. New "Walk into an area" steps advance the quest when you enter a spot, and area notices pop up when you enter a spot on any step.
