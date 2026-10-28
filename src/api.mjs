@@ -10,6 +10,7 @@ import { handleArmory } from './armory.mjs';
 import { handleProfiles } from './profiles.mjs';
 import { handleReports } from './reports.mjs';
 import { handleMarks } from './marks.mjs';
+import { handleWipe } from './wipe.mjs';
 import { handleDuels } from './duels.mjs';
 import { handleStatuses } from './statuses.mjs';
 import { handleQuests } from './quests.mjs';
@@ -45,6 +46,14 @@ function checkCreate(supplied,expected) {
   if (!expected) fail('Creating is switched off until the creation password is set in Cloudflare.',503);
   const a = createHash('sha256').update(String(supplied ?? '')).digest(), b = createHash('sha256').update(String(expected)).digest();
   if (!timingSafeEqual(a,b)) fail('That creation password is not right. Ask your SM or the FC leader.',403);
+}
+// Scenes, encounters and quests can also be run with an optional separate scene password (SCENE_PASSWORD), so someone can use those
+// without holding the creation password that opens every other SM tool. Returns which password was used ('create' or 'scene').
+function checkScene(supplied,createExpected,sceneExpected) {
+  const h = v => createHash('sha256').update(String(v ?? '')).digest();
+  if (createExpected && timingSafeEqual(h(supplied),h(createExpected))) return 'create';
+  if (sceneExpected && timingSafeEqual(h(supplied),h(sceneExpected))) return 'scene';
+  checkCreate(supplied,createExpected);
 }
 function checkMember(supplied,expected) {
   if (!expected) fail('Items are switched off until the member password is set in Cloudflare.',503);
@@ -82,9 +91,10 @@ async function handleInner(request,db,createPassword,memberPassword,bankPassword
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
     if (path === '/sects' || path.startsWith('/sects/')) return await handleSects(request,db,path,{ json,input,rate,ip,hashKey:k => createHash('sha256').update(k).digest('hex'),extras });
     if (path === '/statuses' || path.startsWith('/statuses/')) return await handleStatuses(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
-    if (path === '/quests' || path.startsWith('/quests/')) return await handleQuests(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
+    if (path === '/quests' || path.startsWith('/quests/')) return await handleQuests(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkScene(supplied,createPassword,extras.scenePassword) });
     if (path === '/bank' || path.startsWith('/bank/')) return await handleBank(request,db,path,{ json,input,rate,ip,checkBank:supplied => checkBank(supplied,bankPassword) });
     if (path === '/duels' || path.startsWith('/duels/')) return await handleDuels(request,db,path,{ json,input,rate });
+    if (path.startsWith('/system/')) return await handleWipe(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path.startsWith('/marks/')) return await handleMarks(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/reports' || path.startsWith('/reports/')) return await handleReports(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/profile' || path === '/profiles' || path.startsWith('/profile/')) return await handleProfiles(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
@@ -93,10 +103,10 @@ async function handleInner(request,db,createPassword,memberPassword,bankPassword
     if (path === '/signs' || path.startsWith('/signs/')) return await handleSigns(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/stashes' || path.startsWith('/stashes/')) return await handleStashes(request,db,path,{ json,input,rate,ip });
     if (path === '/items' || path.startsWith('/items/')) return await handleItems(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword),checkMember:supplied => checkMember(supplied,memberPassword) });
-    if (path === '/scenes' || path.startsWith('/scenes/')) return await handleScenes(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
+    if (path === '/scenes' || path.startsWith('/scenes/')) return await handleScenes(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkScene(supplied,createPassword,extras.scenePassword) });
     if (request.method === 'POST' && path === '/rooms') {
       await rate(db,'create:'+ip,8);
-      const data = await input(request); checkCreate(data.createPassword,createPassword);
+      const data = await input(request); checkScene(data.createPassword,createPassword,extras.scenePassword);
       await db.prepare('DELETE FROM rooms WHERE updated_at < ?').bind(new Date(Date.now()-STALE_DAYS*86400000).toISOString()).run();
       const count = await db.prepare('SELECT count(*) AS total FROM rooms').first(); if (count.total >= 500) fail('The site has reached its encounter capacity.',503);
       const result = makeRoom(data.name,data.encounter);
