@@ -90,10 +90,13 @@ export const view = (row, meId) => {
   if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.combineFail = r.failChance || 0; v.result = asView(r.result); } }
   return v;
 };
+// Labels the SMs can put on a registered character. They show at the bottom of that character's roster entry and profile card.
+export const TAGS = ['Harbinger', 'Advocate', 'SM', 'Banker', 'Onyx', 'Vanguard', 'Life Watch', 'Ember'];
+export const tagList = s => TAGS.filter(t => String(s || '').split(',').includes(t));
 export async function who(db, request) {
   const token = (request.headers.get('authorization') || '').replace(/^Bearer /, '');
   if (!token) fail('Sign in on the RP tab first.', 401);
-  const row = await db.prepare('SELECT id, name, gold FROM members WHERE token_hash = ?').bind(sha(token)).first();
+  const row = await db.prepare('SELECT id, name, gold, tags FROM members WHERE token_hash = ?').bind(sha(token)).first();
   if (!row) fail('Your sign-in is no longer valid. Use your recovery code on the RP tab.', 401);
   return row;
 }
@@ -266,6 +269,18 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       if (!(await db.prepare('SELECT id FROM items WHERE id = ?').bind(itemId).first())) fail('That item no longer exists.', 404);
       await purge(db, itemId);
       return json({ deleted: true });
+    }
+    if (path === '/items/admin/registered') {
+      const rows = (await db.prepare('SELECT name, tags, created_at FROM members ORDER BY name_key').all()).results;
+      return json({ tagChoices: TAGS, registered: rows.map(r => ({ name: r.name, tags: tagList(r.tags), joined: r.created_at })) });
+    }
+    if (path === '/items/admin/set-tags') {
+      const row = await db.prepare('SELECT id, name FROM members WHERE name_key = ?').bind(nameKey(str(data.name, 'Name', 40))).first();
+      if (!row) fail('No member has that name.', 404);
+      if (!Array.isArray(data.tags) || data.tags.length > TAGS.length || !data.tags.every(t => TAGS.includes(t))) fail('Choose tags from the list.');
+      const tags = TAGS.filter(t => data.tags.includes(t));
+      await db.prepare('UPDATE members SET tags = ? WHERE id = ?').bind(tags.join(','), row.id).run();
+      return json({ saved: true, name: row.name, tags });
     }
     if (path === '/items/admin/remove-member') {
       const row = await db.prepare('SELECT id, player_id FROM members WHERE name_key = ?').bind(nameKey(str(data.name, 'Name', 40))).first();

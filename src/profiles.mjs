@@ -2,13 +2,13 @@
 // RP profiles: what other players see when they mouse over your character. Everything here is text the player wrote themselves;
 // the portrait is only a link to an image (nothing is uploaded to this server).
 import { fail } from './engine.mjs';
-import { who, str } from './items.mjs';
+import { who, str, tagList } from './items.mjs';
 import { findMember } from './lookup.mjs';
 
 const MAX_FIELDS = 6;
 const view = (m, p) => {
   let fields = []; try { fields = JSON.parse(p?.fields || '[]'); } catch { /* ignore */ }
-  return { name: m.name, displayName: p?.display_name || '', portrait: p?.portrait || '', age: p?.age || '', race: p?.race || '', gender: p?.gender || '', glance: p?.glance || '', ooc: p?.ooc || '', fields };
+  return { name: m.name, tags: tagList(m.tags), displayName: p?.display_name || '', portrait: p?.portrait || '', age: p?.age || '', race: p?.race || '', gender: p?.gender || '', glance: p?.glance || '', ooc: p?.ooc || '', fields };
 };
 
 function clean(d) {
@@ -38,7 +38,7 @@ export async function handleProfiles(request, db, path, { json, input, rate, ip,
   const me = await who(db, request);
 
   if (!post && path === '/profiles') {   // everyone in the RP system, so the plugin can show a tooltip for any registered character
-    const members = (await db.prepare('SELECT id, name FROM members ORDER BY name_key LIMIT 300').all()).results;
+    const members = (await db.prepare('SELECT id, name, tags FROM members ORDER BY name_key LIMIT 300').all()).results;
     const rows = (await db.prepare('SELECT * FROM profiles').all()).results;
     return json({ profiles: members.map(m => view(m, rows.find(p => p.member_id === m.id))) });
   }
