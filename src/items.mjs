@@ -152,6 +152,8 @@ export async function removeMemberData(db, row) {
   await db.prepare('DELETE FROM gold_log WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM statuses WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM quest_progress WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM party_links WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM quest_shared WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM quest_claims WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM quest_fights WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();

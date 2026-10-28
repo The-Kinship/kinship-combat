@@ -1,7 +1,7 @@
 'use strict';
 // Quests: an Advocate writes a quest as ordered steps; players talk to targeted NPCs and the server moves them along.
 // Step types: talk (the NPC speaks), give (hand over an Advocate-made item, which is used up), receive (the NPC gives an item).
-import { fail } from './engine.mjs';
+import { fail, authenticate } from './engine.mjs';
 import { roomOf } from './nearby.mjs';
 import { randomInt } from 'node:crypto';
 import { who, rand, str, nameKey, itemFields, inventory, ownerSlots, CAP, STACK } from './items.mjs';
@@ -114,6 +114,51 @@ async function insertGift(db, ownerId, f) {
   return true;
 }
 
+// Group quests: a player who is in a party (a scene they have linked their character to) takes their party mates along. When one
+// completes a step, every mate with the same quest on the same step is moved on too, gets the same rewards, and is told on their next refresh.
+const MAX_LINKS = 5, MAX_SHARED_KEPT = 30;
+async function advanceMate(db, by, mateId, r, list, st) {
+  const p = await db.prepare('SELECT step, done FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(mateId, r.quest_id).first();
+  if (!p || p.done !== 0 || p.step !== r.step) return;
+  const mate = await db.prepare('SELECT id, name FROM members WHERE id = ?').bind(mateId).first();
+  if (!mate) return;
+  mate.gender = '';
+  if (st.grants) { try { await checkRoom(db, mate.id, st.grants.name); } catch (e) { if (e.status) return; throw e; } }
+  const now = new Date().toISOString(), last = r.step + 1 >= list.length;
+  const moved = await db.prepare('UPDATE quest_progress SET step = step + 1, done = ?, updated_at = ? WHERE member_id = ? AND quest_id = ? AND step = ? AND done = 0').bind(last ? 1 : 0, now, mate.id, r.quest_id, r.step).run();
+  if (moved.meta.changes !== 1) return;
+  const gained = [];
+  if (st.gift) {
+    if (!(await insertGift(db, mate.id, st.gift))) { await db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, mate.id, r.quest_id).run(); return; }   // no room: they stay where they are
+    gained.push(st.gift.name);
+  }
+  let statusGained = '';
+  if (st.grants) { await applyStatus(db, mate.id, { ...st.grants, sourceId: 'dm' }); statusGained = st.grants.name; }
+  await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(mate.id, r.quest_id).run();
+  await db.prepare('INSERT INTO quest_shared (member_id, quest_id, title, by_name, text, gained, status_gained, finished, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .bind(mate.id, r.quest_id, r.title, by.name, await pickText(db, mate, st), JSON.stringify(gained), statusGained, last ? 1 : 0, now).run();
+  await db.prepare('DELETE FROM quest_shared WHERE member_id = ? AND id NOT IN (SELECT id FROM quest_shared WHERE member_id = ? ORDER BY id DESC LIMIT ?)').bind(mate.id, mate.id, MAX_SHARED_KEPT).run();
+}
+async function shareStep(db, me, r, list, st) {
+  try {
+    const links = (await db.prepare('SELECT scene_code, scene_member_id FROM party_links WHERE member_id = ?').bind(me.id).all()).results;
+    const done = new Set();
+    for (const l of links) {
+      const row = await db.prepare('SELECT state FROM scenes WHERE code = ?').bind(l.scene_code).first();
+      if (!row) { await db.prepare('DELETE FROM party_links WHERE scene_code = ?').bind(l.scene_code).run(); continue; }
+      const here = new Set(JSON.parse(row.state).members.map(m => m.id));
+      if (!here.has(l.scene_member_id)) { await db.prepare('DELETE FROM party_links WHERE scene_code = ? AND member_id = ?').bind(l.scene_code, me.id).run(); continue; }
+      const mates = (await db.prepare('SELECT member_id, scene_member_id FROM party_links WHERE scene_code = ? AND member_id != ?').bind(l.scene_code, me.id).all()).results;
+      for (const m of mates) {
+        if (!here.has(m.scene_member_id)) { await db.prepare('DELETE FROM party_links WHERE scene_code = ? AND member_id = ?').bind(l.scene_code, m.member_id).run(); continue; }
+        if (done.has(m.member_id)) continue;
+        done.add(m.member_id);
+        await advanceMate(db, me, m.member_id, r, list, st);
+      }
+    }
+  } catch (e) { if (e.status) throw e; }   // sharing is a bonus: if it hiccups, the player's own step is already done
+}
+
 // Moves one player past one step: checks what the step needs, hands over or takes items, and keeps first-come finds to one winner.
 async function runStep(db, me, r, list, st) {
   const stop = text => ({ quest: r.title, ok: false, text, finished: false, gained: [] });
@@ -214,9 +259,27 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
 
   const me = await who(db, request);
 
+  // Links your character to the party (scene) you are in, so quest steps are shared with the other linked members. Needs the party's own token as proof.
+  if (post && path === '/quests/party/link') {
+    await rate(db, 'quest-link:' + me.id, 30);
+    const d = await input(request), code = String(d.code ?? '').toUpperCase();
+    if (!/^[A-F0-9]{18}$/.test(code)) fail('That is not a party code.');
+    const row = await db.prepare('SELECT state FROM scenes WHERE code = ?').bind(code).first();
+    if (!row) fail('That party no longer exists.', 404);
+    const member = authenticate(JSON.parse(row.state), d.sceneToken);
+    await db.prepare('INSERT INTO party_links (scene_code, member_id, scene_member_id, created_at) VALUES (?,?,?,?) ON CONFLICT(scene_code, member_id) DO UPDATE SET scene_member_id = excluded.scene_member_id').bind(code, me.id, member.id, new Date().toISOString()).run();
+    await db.prepare('DELETE FROM party_links WHERE member_id = ? AND scene_code NOT IN (SELECT scene_code FROM party_links WHERE member_id = ? ORDER BY created_at DESC LIMIT ?)').bind(me.id, me.id, MAX_LINKS).run();
+    return json({ linked: true });
+  }
+  if (post && path === '/quests/party/unlink') {
+    await db.prepare('DELETE FROM party_links WHERE member_id = ?').bind(me.id).run();
+    return json({ unlinked: true });
+  }
   if (!post && path === '/quests/mine') {
     const { results } = await db.prepare(SELECT_P).bind(me.id).all();
-    return json({ quests: results.map(mineView) });
+    const told = (await db.prepare('SELECT * FROM quest_shared WHERE member_id = ? ORDER BY id LIMIT 20').bind(me.id).all()).results;
+    if (told.length) await db.prepare(`DELETE FROM quest_shared WHERE member_id = ? AND id IN (${told.map(() => '?').join(',')})`).bind(me.id, ...told.map(t => t.id)).run();
+    return json({ quests: results.map(mineView), shared: told.map(t => ({ quest: t.title, by: t.by_name, text: t.text, gained: JSON.parse(t.gained), statusGained: t.status_gained, finished: t.finished === 1 })) });
   }
 
   if (post && (path === '/quests/fight/start' || path === '/quests/fight/attack')) {
@@ -254,6 +317,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       const line = await runStep(db, me, row, list, st);
       if (line && line.ok) {
         await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, row.quest_id).run();
+        await shareStep(db, me, row, list, st);
         return json({ fight: fightView(row, st, me, { ...f, log: JSON.stringify(log.slice(-8)) }, 'won', { result: line }), items: await inventory(db, me.id) });
       }
       if (line && line.failed) {
@@ -350,6 +414,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       if (talking ? (SPOT.includes(st.type) || st.type === 'fight' || nameKey(st.npc) !== npc) : (st.type !== kind || st.place.territory !== territory)) continue;
       const line = await runStep(db, me, r, list, st);
       if (line) out.push(line);
+      if (line && line.ok) await shareStep(db, me, r, list, st);
     }
     return json({ results: out, items: await inventory(db, me.id) });
   }
