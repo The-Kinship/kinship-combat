@@ -24,6 +24,20 @@ export function str(value, name, max, required = true) {
 export async function alphaGear(db) {
   try { const r = await db.prepare("SELECT value FROM settings WHERE key = 'alpha_gear'").first(); return r?.value === '1'; } catch { return false; }
 }
+export const ALPHA_GOLD = 50;
+/** Alpha mode gives each character a one-time purse of starting gold (never again, so once it is spent it is gone). One id, or everyone who has not had it. */
+export async function grantAlphaGold(db, memberId = null) {
+  const ids = memberId ? [memberId] : (await db.prepare('SELECT id FROM members WHERE alpha_gold = 0').all()).results.map(r => r.id);
+  let granted = 0;
+  for (const id of ids) {
+    const r = await db.prepare('UPDATE members SET gold = gold + ?, alpha_gold = 1 WHERE id = ? AND alpha_gold = 0').bind(ALPHA_GOLD, id).run();
+    if (r.meta.changes === 1) {
+      await db.prepare('INSERT INTO gold_log (member_id, delta, note, created_at) VALUES (?,?,?,?)').bind(id, ALPHA_GOLD, 'Alpha test starting gold', new Date().toISOString()).run();
+      granted++;
+    }
+  }
+  return granted;
+}
 export function itemFields(data, allowBonus = false, gearOnly = false) {
   const name = str(data.name, 'Item name', 40), description = str(data.description, 'Description', 300, false), flavor = str(data.flavor, 'Flavor text', 150, false);
   const useText = str(data.useText, 'What happens when used', 400, false);
@@ -165,6 +179,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       await db.prepare('INSERT INTO players (id, recovery_hash, created_at) VALUES (?,?,?)').bind(player.id, hash, now).run();
     }
     await db.prepare('INSERT INTO members (id, name, name_key, token_hash, recovery_hash, player_id, created_at) VALUES (?,?,?,?,?,?,?)').bind(id, name, nameKey(name), sha(token), hash, player.id, now).run();
+    if (await alphaGear(db)) await grantAlphaGold(db, id);
     return json({ token, memberId: id, name, recoveryCode: recovery ? `${recovery.slice(0, 4)}-${recovery.slice(4, 8)}-${recovery.slice(8)}` : null, linked: !recovery }, 201);
   }
   if (post && path === '/items/recover') {

@@ -3,7 +3,7 @@
 // code, same profile); every other character is removed with everything of theirs; all items, stashes, signs, mail, statuses, quest progress,
 // gold history, duels, reports and encounters are cleared. Name nobody to keep and every character goes too (needs a stronger confirm phrase). Marks and bans are kept. Quests are only cleared if asked. Creation password only.
 import { fail } from './engine.mjs';
-import { str, removeMemberData, alphaGear } from './items.mjs';
+import { str, removeMemberData, alphaGear, grantAlphaGold } from './items.mjs';
 import { findMember } from './lookup.mjs';
 
 export const KEEP_TABLES = ['members', 'players', 'profiles', 'marks', 'bans', 'settings'];
@@ -20,7 +20,8 @@ export async function handleWipe(request, db, path, { json, input, rate, ip, che
       if (typeof a.on !== 'boolean') fail('Say whether alpha mode is on or off.');
       await db.prepare("INSERT INTO settings (key, value) VALUES ('alpha_gear', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(a.on ? '1' : '0').run();
     }
-    return json({ alphaGear: await alphaGear(db) });
+    const granted = path === '/system/admin/alpha' && a.on ? await grantAlphaGold(db) : 0;
+    return json({ alphaGear: await alphaGear(db), granted });
   }
   if (request.method !== 'POST' || (path !== '/system/admin/wipe' && path !== '/system/admin/wipe-check')) fail('Endpoint not found.', 404);
   await rate(db, 'wipe-admin:' + ip, 10);
