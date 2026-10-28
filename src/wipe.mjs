@@ -3,7 +3,7 @@
 // code, same profile); every other character is removed with everything of theirs; all items, stashes, signs, mail, statuses, quest progress,
 // gold history, duels, reports and encounters are cleared. Name nobody to keep and every character goes too (needs a stronger confirm phrase). Marks and bans are kept. Quests are only cleared if asked. Creation password only.
 import { fail } from './engine.mjs';
-import { str, removeMemberData, alphaGear, grantAlphaGold } from './items.mjs';
+import { str, removeMemberData, alphaGear, alphaCap, grantAlphaGold } from './items.mjs';
 import { findMember } from './lookup.mjs';
 
 export const KEEP_TABLES = ['members', 'players', 'profiles', 'marks', 'bans', 'settings'];
@@ -17,11 +17,16 @@ export async function handleWipe(request, db, path, { json, input, rate, ip, che
     await rate(db, 'alpha-admin:' + ip, 20);
     const a = await input(request); checkCreate(a.adminPassword);
     if (path === '/system/admin/alpha') {
-      if (typeof a.on !== 'boolean') fail('Say whether alpha mode is on or off.');
-      await db.prepare("INSERT INTO settings (key, value) VALUES ('alpha_gear', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(a.on ? '1' : '0').run();
+      if (typeof a.on !== 'boolean' && a.maxCharacters === undefined) fail('Say whether alpha mode is on or off.');
+      if (typeof a.on === 'boolean') await db.prepare("INSERT INTO settings (key, value) VALUES ('alpha_gear', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(a.on ? '1' : '0').run();
+    }
+    if (path === '/system/admin/alpha' && a.maxCharacters !== undefined) {
+      if (!Number.isInteger(a.maxCharacters) || a.maxCharacters < 0 || a.maxCharacters > 500) fail('The character limit must be a whole number from 0 to 500 (0 means no limit).');
+      await db.prepare("INSERT INTO settings (key, value) VALUES ('alpha_max_chars', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(String(a.maxCharacters)).run();
     }
     const granted = path === '/system/admin/alpha' && a.on ? await grantAlphaGold(db) : 0;
-    return json({ alphaGear: await alphaGear(db), granted });
+    const characters = (await db.prepare('SELECT count(*) AS n FROM members').first()).n;
+    return json({ alphaGear: await alphaGear(db), granted, maxCharacters: await alphaCap(db), characters });
   }
   if (request.method !== 'POST' || (path !== '/system/admin/wipe' && path !== '/system/admin/wipe-check')) fail('Endpoint not found.', 404);
   await rate(db, 'wipe-admin:' + ip, 10);

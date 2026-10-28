@@ -24,6 +24,10 @@ export function str(value, name, max, required = true) {
 export async function alphaGear(db) {
   try { const r = await db.prepare("SELECT value FROM settings WHERE key = 'alpha_gear'").first(); return r?.value === '1'; } catch { return false; }
 }
+/** While alpha mode is on, an SM-set cap on how many characters can be registered in total (0 or unset means no cap). */
+export async function alphaCap(db) {
+  try { const r = await db.prepare("SELECT value FROM settings WHERE key = 'alpha_max_chars'").first(); return Math.max(0, parseInt(r?.value ?? '0', 10) || 0); } catch { return 0; }
+}
 export const ALPHA_GOLD = 50;
 /** Alpha mode gives each character a one-time purse of starting gold (never again, so once it is spent it is gone). One id, or everyone who has not had it. */
 export async function grantAlphaGold(db, memberId = null) {
@@ -160,7 +164,9 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     await rate(db, 'items-register:' + ip, 10);
     const data = await input(request); checkMember(data.memberPassword);
     const name = str(data.name, 'Your name', 40); if (name.length < 2) fail('Your name must be at least 2 characters.');
-    if ((await db.prepare('SELECT count(*) AS total FROM members').first()).total >= MAX_MEMBERS) fail('The item system is full.', 503);
+    const registered = (await db.prepare('SELECT count(*) AS total FROM members').first()).total;
+    if (registered >= MAX_MEMBERS) fail('The item system is full.', 503);
+    if (await alphaGear(db)) { const cap = await alphaCap(db); if (cap > 0 && registered >= cap) fail('The alpha test is full: every place is taken. Please speak to the organizer.', 403); }
     if (await db.prepare('SELECT 1 AS ok FROM bans WHERE name_key = ?').bind(nameKey(name)).first()) fail('That name cannot be registered. Please speak to an Advocate.', 403);
     if (await db.prepare('SELECT id FROM members WHERE name_key = ?').bind(nameKey(name)).first()) fail('That name is already registered. If it is yours, use your recovery code.', 409);
     // A character can join an existing player (someone's alt) by giving that player's recovery code. Otherwise they start a new player and get a code.
