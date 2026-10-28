@@ -217,3 +217,25 @@ test('winning a fight for a once-only reward someone already took fails the ques
   assert.equal((await call('GET','/quests/mine',undefined,b.token)).quests[0].failed,true);
   assert.equal(db.sqlite.prepare('SELECT count(*) AS n FROM quest_fights WHERE member_id != ?').get('x').n,0);
 });
+
+test('an arrive step advances when reported, and area notices pop up without moving the quest',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  const spot=(radius)=>({zone:'Forest',territory:339,map:12,room:'',x:10,y:0,z:10,mapX:10,mapY:10,...(radius===undefined?{}:{radius})});
+  const steps=[{type:'arrive',text:'You find the bones.',place:spot(5)},{type:'talk',npc:'Old Maren',text:'Well done.'}];
+  assert.equal((await admin('save',{title:'Q',steps:[{type:'arrive',text:'x',place:spot()}]})).status,400);              // arrive needs a radius
+  assert.equal((await admin('save',{title:'Q',steps:[{type:'arrive',text:'x',place:spot(500)}]})).status,400);
+  assert.equal((await admin('save',{title:'Q',steps,notices:[{text:'x',place:spot()}]})).status,400);                    // notice needs a radius
+  const saved=await admin('save',{title:'Q',steps,notices:[{text:'It smells like the animal passed by.',place:spot(12),repeat:true}]});assert.equal(saved.status,201);
+  await admin('assign',{questId:saved.id,to:'Mira'});
+  const mine=(await call('GET','/quests/mine',undefined,a.token)).quests[0];
+  assert.equal(mine.current.place.radius,5);assert.equal(mine.notices.length,1);assert.equal(mine.notices[0].place.radius,12);assert.equal(JSON.stringify(mine).includes('smells like'),false);   // words stay on the server
+  let r=await call('POST','/quests/notice',{questId:saved.id,index:0,territory:339},a.token);assert.match(r.text,/animal passed/);
+  assert.equal((await call('POST','/quests/notice',{questId:saved.id,index:0,territory:1},a.token)).text,'');            // wrong zone
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,0);                                   // a notice never advances the quest
+  r=await call('POST','/quests/act',{type:'arrive',territory:339},a.token);assert.equal(r.results[0].ok,true);assert.equal(r.results[0].text,'You find the bones.');
+  assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,1);
+  assert.equal((await call('POST','/quests/act',{type:'arrive',territory:339},a.token)).results.length,0);              // no longer the current step
+  assert.match((await call('POST','/quests/notice',{questId:saved.id,index:0,territory:339},a.token)).text,/animal/);   // still pops up on a later step
+  const b=await join(call,'Kael');assert.equal((await call('POST','/quests/notice',{questId:saved.id,index:0,territory:339},b.token)).text,'');   // not on the quest
+});
