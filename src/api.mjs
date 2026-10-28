@@ -4,6 +4,7 @@ import { handleScenes } from './scenes.mjs';
 import { handleItems } from './items.mjs';
 import { handleStashes } from './stashes.mjs';
 import { handleSigns } from './signs.mjs';
+import { handleFinds } from './finds.mjs';
 import { handleBank } from './bank.mjs';
 import { handleMail } from './mail.mjs';
 import { handleArmory } from './armory.mjs';
@@ -100,6 +101,7 @@ async function handleInner(request,db,createPassword,memberPassword,bankPassword
     if (path === '/profile' || path === '/profiles' || path.startsWith('/profile/')) return await handleProfiles(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/armory' || path.startsWith('/armory/')) return await handleArmory(request,db,path,{ json,input,rate });
     if (path === '/mail' || path.startsWith('/mail/')) return await handleMail(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
+    if (path === '/finds' || path.startsWith('/finds/')) return await handleFinds(request,db,path,{ json,input,rate });
     if (path === '/signs' || path.startsWith('/signs/')) return await handleSigns(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/stashes' || path.startsWith('/stashes/')) return await handleStashes(request,db,path,{ json,input,rate,ip });
     if (path === '/items' || path.startsWith('/items/')) return await handleItems(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword),checkMember:supplied => checkMember(supplied,memberPassword) });

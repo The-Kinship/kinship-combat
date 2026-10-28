@@ -140,6 +140,7 @@ export async function removeMemberData(db, row) {
   await db.prepare("DELETE FROM items WHERE owner_id IN (SELECT 's' || id FROM stashes WHERE owner_id = ?)").bind(row.id).run();
   await db.prepare('DELETE FROM stashes WHERE owner_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM signs WHERE owner_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM finds WHERE creator_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM items WHERE owner_id = ?').bind('w' + row.id).run();   // what they were wearing
   await db.prepare('DELETE FROM worn WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM gear_notices WHERE member_id = ?').bind(row.id).run();
