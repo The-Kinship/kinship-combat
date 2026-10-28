@@ -36,3 +36,19 @@ test('alpha gear switch: testers can add gear bonuses only while it is on',async
   assert.equal(db.sqlite.prepare("SELECT gear_atk FROM items WHERE name='Late Helm'").get().gear_atk,0);
   assert.equal((await call('POST','/system/admin/alpha-get',{adminPassword:'dmpass'})).alphaGear,false);
 });
+
+test('alpha mode gives each character 50 gold once',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const gold=n=>db.sqlite.prepare('SELECT gold FROM members WHERE name=?').get(n).gold;
+  const early=await call('POST','/items/register',{name:'Early Bird',memberPassword:'fcpass'});assert.equal(early.status,201);
+  assert.equal(gold('Early Bird'),0);                                                    // alpha off: nothing
+  const on=await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:true});assert.equal(on.granted,1);
+  assert.equal(gold('Early Bird'),50);                                                   // already registered: paid on switching on
+  await call('POST','/items/register',{name:'Late Comer',memberPassword:'fcpass'});
+  assert.equal(gold('Late Comer'),50);                                                   // registered during alpha: paid at once
+  db.sqlite.exec("UPDATE members SET gold = 0");                                         // spent it all
+  await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:false});
+  assert.equal((await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:true})).granted,0);
+  assert.equal(gold('Early Bird'),0);assert.equal(gold('Late Comer'),0);                 // never again
+  assert.equal(db.sqlite.prepare("SELECT count(*) n FROM gold_log WHERE note='Alpha test starting gold'").get().n,2);
+});
