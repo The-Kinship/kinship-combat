@@ -32,7 +32,7 @@ test('wipe keeps the named characters and clears the rest',async t=>{
   db.sqlite.exec("UPDATE members SET gold = 50");
   const ok={adminPassword:'dmpass',keep:['Mira Vale','Mira Alt']};
   assert.equal((await call('POST','/system/admin/wipe-check',{...ok,adminPassword:'scenepass'})).status,403);   // not with the scene password
-  assert.equal((await call('POST','/system/admin/wipe-check',{...ok,keep:[]})).status,400);
+  assert.equal((await call('POST','/system/admin/wipe-check',{...ok,keep:'Mira'})).status,400);
   const miss=await call('POST','/system/admin/wipe-check',{...ok,keep:['Nobody Here']});assert.equal(miss.status,404);
   const check=await call('POST','/system/admin/wipe-check',ok);assert.equal(check.status,200);
   assert.deepEqual(check.wipe.remove,['Tobin']);assert.equal(check.wipe.counts.items,2);assert.equal(check.wipe.counts.quests,undefined);
@@ -48,4 +48,16 @@ test('wipe keeps the named characters and clears the rest',async t=>{
   assert.equal((await call('GET','/items/me',undefined,b.token)).status,401);
   db.sqlite.exec('DELETE FROM rate_limits');
   const w2=await call('POST','/system/admin/wipe',{...ok,quests:true,confirm:'WIPE EVERYTHING'});assert.equal(w2.status,200);assert.equal(count(db,'quests'),0);
+});
+
+test('wipe with nobody kept removes every character, with a stronger confirm phrase',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await join(call,'Mira Vale'),b=await join(call,'Tobin');
+  await call('POST','/items',{name:'Rope',icon:'game:20001',description:'x'},a.token);
+  const none={adminPassword:'dmpass',keep:[]};
+  const check=await call('POST','/system/admin/wipe-check',none);assert.equal(check.status,200);assert.equal(check.wipe.remove.length,2);
+  assert.equal((await call('POST','/system/admin/wipe',{...none,confirm:'WIPE EVERYTHING'})).status,400);
+  assert.equal(count(db,'members'),2);
+  assert.equal((await call('POST','/system/admin/wipe',{...none,confirm:'WIPE ALL CHARACTERS'})).status,200);
+  assert.equal(count(db,'members'),0);assert.equal(count(db,'players'),0);assert.equal(count(db,'items'),0);
 });
