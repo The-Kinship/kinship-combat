@@ -58,10 +58,10 @@ test('alpha mode can cap how many characters register',async t=>{
   const reg=n=>call('POST','/items/register',{name:n,memberPassword:'fcpass'});
   assert.equal((await call('POST','/system/admin/alpha',{adminPassword:'scenepass',on:true,maxCharacters:2})).status,403);
   assert.equal((await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:true,maxCharacters:-1})).status,400);
-  const r=await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:true,maxCharacters:2});assert.equal(r.maxCharacters,2);assert.equal(r.characters,0);
+  const r=await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:true,maxCharacters:2});assert.equal(r.maxCharacters,2);assert.equal(r.characterCount,0);
   assert.equal((await reg('Tester One')).status,201);assert.equal((await reg('Tester Two')).status,201);
   const full=await reg('Stranger');assert.equal(full.status,403);assert.match(full.error,/full/);
-  assert.equal((await call('POST','/system/admin/alpha-get',{adminPassword:'dmpass'})).characters,2);
+  assert.equal((await call('POST','/system/admin/alpha-get',{adminPassword:'dmpass'})).characterCount,2);
   assert.equal((await call('POST','/system/admin/alpha',{adminPassword:'dmpass',maxCharacters:3})).maxCharacters,3);   // raise it without touching the other switch
   assert.equal((await reg('Stranger')).status,201);
   await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:false});                                       // cap only applies while alpha is on
