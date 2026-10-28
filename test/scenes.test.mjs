@@ -96,13 +96,13 @@ test('cross-origin writes are refused and stale scenes are cleared',async t=>{
   assert.equal((await call('GET',`/scenes/${s.code}?after=0`,undefined,s.dm.token)).status,404);
 });
 
-test('creating needs the creation password, but joining only needs a code',async t=>{
+test('parties are open to everyone, encounters need the password, and joining only needs a code',async t=>{
   const db=database();t.after(()=>db.sqlite.close());
   const raw=(pw,expected='letmein')=>async(path,data)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://kinship.test'},body:JSON.stringify(pw===undefined?data:{...data,createPassword:pw})}),db,expected);return {status:r.status,...await r.json()}};
-  assert.equal((await raw(undefined)('/scenes',{name:'x',title:'y'})).status,403);
-  assert.equal((await raw('wrong')('/scenes',{name:'x',title:'y'})).status,403);
+  assert.equal((await raw(undefined)('/scenes',{name:'x',title:'y'})).status,201);
+  assert.equal((await raw('wrong')('/scenes',{name:'x',title:'y'})).status,201);
+  assert.equal((await raw(undefined)('/rooms',{name:'x',encounter:'y'})).status,403);
   assert.equal((await raw('wrong')('/rooms',{name:'x',encounter:'y'})).status,403);
-  assert.equal((await raw('letmein','')('/scenes',{name:'x',title:'y'})).status,503);
   const ok=await raw('letmein')('/scenes',{name:'Mira',title:'Mansion'});assert.equal(ok.status,201);
   const room=await raw('letmein')('/rooms',{name:'Mira',encounter:'Fight'});assert.equal(room.status,201);
   assert.equal((await raw(undefined)(`/scenes/${ok.code}/join`,{name:'Ash'})).status,201);

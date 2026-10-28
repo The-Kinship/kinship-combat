@@ -12,7 +12,7 @@ const mk=(db,extras)=>async(method,path,data)=>{const r=await handle(new Request
 test('a separate scene password starts scenes and encounters but opens no other SM tool',async t=>{
   const db=database();t.after(()=>db.sqlite.close());
   const call=mk(db,{scenePassword:'scenepass'});
-  assert.equal((await call('POST','/scenes',{name:'A',title:'x',createPassword:'wrong'})).status,403);
+  assert.equal((await call('POST','/scenes',{name:'A',title:'x',createPassword:'wrong'})).status,201);   // parties are open to everyone
   assert.equal((await call('POST','/scenes',{name:'A',title:'x',createPassword:'scenepass'})).status,201);
   assert.equal((await call('POST','/scenes',{name:'A',title:'x',createPassword:'dmpass'})).status,201);   // the creation password still works
   assert.equal((await call('POST','/rooms',{name:'A',encounter:'Fight',createPassword:'scenepass'})).status,201);
@@ -24,7 +24,7 @@ test('a separate scene password starts scenes and encounters but opens no other 
   assert.equal((await call('POST','/statuses/admin/add',{adminPassword:'scenepass',to:'X'})).status,403);
   // with no scene password set, nothing changes
   const plain=mk(db,{});
-  assert.equal((await plain('POST','/scenes',{name:'A',title:'x',createPassword:'scenepass'})).status,403);
+  assert.equal((await plain('POST','/scenes',{name:'A',title:'x'})).status,201);
   assert.equal((await plain('POST','/scenes',{name:'A',title:'x',createPassword:'dmpass'})).status,201);
   // quests: the scene password can make and manage quests, but a status reward cannot carry roll bonuses
   const step=g=>({type:'talk',npc:'Guard',text:'Hello',grants:g});
