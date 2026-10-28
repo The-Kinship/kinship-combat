@@ -18,14 +18,14 @@ function grant(g, at) {
 }
 
 const MAX_QUESTS = 60, MAX_STEPS = 12, MAX_ACTIVE = 15;
-const TYPES = ['talk', 'give', 'receive', 'look', 'listen', 'search', 'fight'];
+const TYPES = ['talk', 'give', 'receive', 'look', 'listen', 'search', 'arrive', 'fight'];   // arrive: the plugin reports it when you walk into the spot's radius
 const whole = (v, name, lo, hi, dflt) => { if (v === undefined || v === null) return dflt; if (!Number.isInteger(v) || v < lo || v > hi) fail(`${name} must be a whole number from ${lo} to ${hi}.`); return v; };
 function fightSpec(f) {
   f = f && typeof f === 'object' ? f : {};
   return { npcHp: whole(f.npcHp, 'Enemy HP', 1, 999, 30), npcDie: whole(f.npcDie, 'Enemy die', 2, 100, 8), npcBonus: whole(f.npcBonus, 'Enemy bonus', -50, 50, 0),
     playerHp: whole(f.playerHp, 'Player HP', 1, 999, 30), playerDie: whole(f.playerDie, 'Player die', 2, 100, 8), playerBonus: whole(f.playerBonus, 'Player bonus', -50, 50, 0) };
 }
-const SPOT = ['look', 'listen', 'search'];
+const SPOT = ['look', 'listen', 'search', 'arrive'];
 // A step can say something different to some people: by the gender on the faction roster (the plugin sends it) or by a status they have.
 // Each variant needs a gender, a status, or both (both must match). The first one that matches wins; otherwise the normal text is used.
 const MAX_VARIANTS = 6;
@@ -50,11 +50,13 @@ async function pickText(db, me, st) {
 }
 const needMsg = st => `${st.needText || 'You are not ready for this yet.'}\n\nRequires status: ${st.needs}`;
 const num = (v, name, lim) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > lim) fail(`${name} is not valid.`); return Math.round(v * 100) / 100; };
-function place(d) {
+function place(d, needRadius = false) {
   if (!d || typeof d !== 'object') fail('A step that happens at a spot needs a location. Stand there and use "Use this location".');
   if (!Number.isInteger(d.territory) || d.territory < 0 || d.territory > 65535) fail('That zone is not valid.');
   if (!Number.isInteger(d.map) || d.map < 0 || d.map > 1000000) fail('That map is not valid.');
-  return { room: roomOf(d.room), zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
+  let radius = 0;
+  if (needRadius || d.radius !== undefined) { if (!Number.isInteger(d.radius) || d.radius < 1 || d.radius > 100) fail('The radius is how many yalms around the spot it works, from 1 to 100.'); radius = d.radius; }
+  return { radius, room: roomOf(d.room), zone: str(d.zone, 'Zone', 80, false), territory: d.territory, map: d.map, x: num(d.x, 'Position', 20000), y: num(d.y, 'Position', 20000), z: num(d.z, 'Position', 20000), mapX: num(d.mapX, 'Map position', 500), mapY: num(d.mapY, 'Map position', 500) };
 }
 
 function steps(list) {
@@ -66,7 +68,7 @@ function steps(list) {
     const out = { type: s.type, npc: spot ? '' : str(s.npc, `${at} character name`, 40), text: str(s.text, `${at} text`, 600), hint: str(s.hint, `${at} hint`, 150, false) };
     const alt = variants(s.variants, at);
     if (alt.length) out.variants = alt;
-    if (spot || (fight && s.place)) out.place = place(s.place);
+    if (spot || (fight && s.place)) out.place = place(s.place, s.type === 'arrive');
     if (fight) out.fight = fightSpec(s.fight);
     const needs = str(s.needs, `${at} required status`, 30, false);
     if (needs) { out.needs = needs; out.needText = str(s.needText, `${at} message when missing`, 200, false); out.takesNeeded = s.takesNeeded === true; }
@@ -80,10 +82,21 @@ function steps(list) {
     return out;
   });
 }
-const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? ORDER BY p.updated_at';
+// Area notices: text that pops up whenever someone on the quest walks into a spot, whatever step they are on. It never moves the quest along.
+const MAX_NOTICES = 8;
+function notices(list) {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list) || list.length > MAX_NOTICES) fail(`A quest can have up to ${MAX_NOTICES} area notices.`);
+  return list.map((n, i) => {
+    if (!n || typeof n !== 'object') fail(`Area notice ${i + 1} is not valid.`);
+    return { place: place(n.place, true), text: str(n.text, `Area notice ${i + 1} text`, 600), repeat: n.repeat === true };
+  });
+}
+const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps, q.notices FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? ORDER BY p.updated_at';
 function mineView(r) {
   const list = JSON.parse(r.steps), cur = r.done ? null : list[r.step];
   return { questId: r.quest_id, title: r.title, intro: r.intro, step: r.step, total: list.length, done: r.done === 1, failed: r.done === 2,
+    notices: r.done ? [] : JSON.parse(r.notices || '[]').map((n, index) => ({ index, place: n.place, repeat: n.repeat })),   // where, never what they say
     current: cur ? { type: cur.type, npc: cur.npc, item: cur.item || '', hint: cur.hint, place: cur.place || null } : null };
 }
 const rollDie = (sides, bonus) => { const raw = 1 + randomInt(sides); return { raw, total: Math.max(1, raw + bonus) }; };
@@ -150,17 +163,17 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       const { results } = await db.prepare('SELECT * FROM quests ORDER BY created_at, rowid').all();
       const prog = (await db.prepare('SELECT p.quest_id, p.step, p.done, m.name FROM quest_progress p JOIN members m ON m.id = p.member_id ORDER BY m.name_key').all()).results;
       const claims = (await db.prepare('SELECT c.quest_id, c.step, m.name FROM quest_claims c LEFT JOIN members m ON m.id = c.member_id').all()).results;
-      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text,
+      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text, notices: JSON.parse(q.notices || '[]'),
         players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: p.done === 1, failed: p.done === 2 })),
         claims: claims.filter(c => c.quest_id === q.id).map(c => ({ step: c.step, name: c.name || '(removed)' })) })) });
     }
     if (path === '/quests/admin/save') {
-      const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps);
+      const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps), areas = JSON.stringify(notices(d.notices));
       if (level === 'scene') for (const s of list) if (s.grants) { s.grants.atk = 0; s.grants.heal = 0; }   // roll bonuses on a status are for Advocates (creation password) only
       const startPlace = d.startPlace ? JSON.stringify(place(d.startPlace)) : '', startText = d.startPlace ? str(d.startText, 'Text at the starting spot', 600) : '';
       if (d.questId) {
         const id = str(d.questId, 'Quest', 20);
-        const r = await db.prepare('UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=? WHERE id=?').bind(title, intro, JSON.stringify(list), startPlace, startText, id).run();
+        const r = await db.prepare('UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=?, notices=? WHERE id=?').bind(title, intro, JSON.stringify(list), startPlace, startText, areas, id).run();
         if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
         // A shorter quest finishes anyone who was past the new end.
         await db.prepare('UPDATE quest_progress SET done = 1 WHERE quest_id = ? AND done = 0 AND step >= ?').bind(id, list.length).run();
@@ -168,7 +181,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       }
       if ((await db.prepare('SELECT count(*) AS total FROM quests').first()).total >= MAX_QUESTS) fail('There are too many quests. Delete one first.', 409);
       const id = rand(6);
-      await db.prepare('INSERT INTO quests (id, title, intro, steps, start_place, start_text, created_at) VALUES (?,?,?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), startPlace, startText, new Date().toISOString()).run();
+      await db.prepare('INSERT INTO quests (id, title, intro, steps, start_place, start_text, notices, created_at) VALUES (?,?,?,?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), startPlace, startText, areas, new Date().toISOString()).run();
       return json({ saved: true, id }, 201);
     }
     if (path === '/quests/admin/delete') {
@@ -306,6 +319,16 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     if (r.meta.changes !== 1) fail('You have already taken this up.', 409);
     if (item && item.consumable) await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(item.id, me.id).run();
     return json({ accepted: true, items: await inventory(db, me.id) }, 201);
+  }
+  // The plugin reports walking into an area notice; the server checks the quest is in progress and the zone matches, then sends the words.
+  if (post && path === '/quests/notice') {
+    await rate(db, 'quest-notice:' + me.id, 120);
+    const d = await input(request), questId = str(d.questId, 'Quest', 20);
+    if (!Number.isInteger(d.index) || !Number.isInteger(d.territory)) fail('That notice is not valid.');
+    const r = await db.prepare('SELECT q.notices FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? AND p.quest_id = ? AND p.done = 0').bind(me.id, questId).first();
+    const n = r ? JSON.parse(r.notices || '[]')[d.index] : null;
+    if (!n || n.place.territory !== d.territory) return json({ text: '' });
+    return json({ text: n.text });
   }
   if (post && (path === '/quests/talk' || path === '/quests/act')) {
     await rate(db, 'quest-talk:' + me.id, 60);
