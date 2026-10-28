@@ -26,7 +26,7 @@ export async function handleWipe(request, db, path, { json, input, rate, ip, che
     }
     const granted = path === '/system/admin/alpha' && a.on ? await grantAlphaGold(db) : 0;
     const characters = (await db.prepare('SELECT count(*) AS n FROM members').first()).n;
-    return json({ alphaGear: await alphaGear(db), granted, maxCharacters: await alphaCap(db), characters });
+    return json({ alphaGear: await alphaGear(db), granted, maxCharacters: await alphaCap(db), characterCount: characters });
   }
   if (request.method !== 'POST' || (path !== '/system/admin/wipe' && path !== '/system/admin/wipe-check')) fail('Endpoint not found.', 404);
   await rate(db, 'wipe-admin:' + ip, 10);
