@@ -1,0 +1,19 @@
+CREATE TABLE IF NOT EXISTS finds (
+  id TEXT PRIMARY KEY,
+  creator_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT 'once',
+  minutes INTEGER NOT NULL DEFAULT 0,
+  taken INTEGER NOT NULL DEFAULT 0,
+  available_at TEXT,
+  item TEXT NOT NULL,
+  zone TEXT NOT NULL DEFAULT '',
+  territory INTEGER NOT NULL,
+  map_id INTEGER NOT NULL DEFAULT 0,
+  room TEXT NOT NULL DEFAULT '',
+  x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL,
+  map_x REAL NOT NULL DEFAULT 0, map_y REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS finds_creator ON finds (creator_id);
