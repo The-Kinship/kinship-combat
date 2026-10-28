@@ -39,7 +39,7 @@ const eventsFor = (scene, member, after) => scene.events.filter(e => e.id > afte
 export async function handleScenes(request, db, path, { json, input, rate, ip, checkCreate }) {
   if (request.method === 'POST' && path === '/scenes') {
     await rate(db, 'scene-create:' + ip, 8);
-    const data = await input(request); checkCreate(data.createPassword);
+    const data = await input(request);
     await db.prepare('DELETE FROM scenes WHERE updated_at < ?').bind(new Date(Date.now() - STALE_DAYS * 86400000).toISOString()).run();
     const count = await db.prepare('SELECT count(*) AS total FROM scenes').first();
     if (count.total >= MAX_SCENES) fail('The site has reached its scene capacity.', 503);
