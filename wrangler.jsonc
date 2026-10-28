@@ -5,6 +5,6 @@
   "compatibility_flags": ["nodejs_compat"],
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*", "/"] },
   "d1_databases": [
-    { "binding": "DB", "database_name": "kinship-combat-db", "database_id": "PASTE-YOUR-DATABASE-ID-HERE", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "kinship-combat-db", "database_id": "abeec4b1-5cd0-4678-9d39-c09a7e0022ac", "migrations_dir": "migrations" }
   ]
 }
