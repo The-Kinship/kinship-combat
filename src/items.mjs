@@ -329,9 +329,10 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
   if (route === 'update') {
     if (item.creator_id !== me.id) fail('Only the person who made an item can change it.', 403);
     const body = await input(request), alpha = await alphaGear(db), f = itemFields(body, alpha, true), recipe = recipeJson(body, alpha, true);
-    for (const unit of await groupIds(db, me.id, id))
+    for (const unit of await groupIds(db, me.id, id)) {
       await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, st_atk=?, st_heal=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.stAtk, f.stHeal, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
     await db.prepare('UPDATE items SET wear_slot=?, gear_atk=?, gear_heal=?, lifespan_days=? WHERE id=? AND owner_id=? AND worn_at IS NULL').bind(f.wearSlot, f.gearAtk, f.gearHeal, f.lifespanDays, unit, me.id).run();   // gear settings can't change once it has been worn
+    }
   } else if (route === 'delete') {
     // Delete one unit, or several from the same stack (count). Units with things inside never stack, so a bigger count only applies to plain items.
     const body = request.headers.get('content-type')?.startsWith('application/json') ? await input(request) : {};
