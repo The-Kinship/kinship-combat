@@ -1,4 +1,3 @@
-![CodeQL Status](https://github.com/The-Kinship/kinship-combat/actions/workflows/codeql.yml/badge.svg)
 
 # Kinship Combat
 
