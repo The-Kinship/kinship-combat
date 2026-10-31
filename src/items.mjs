@@ -159,6 +159,8 @@ export async function removeMemberData(db, row) {
   await db.prepare('DELETE FROM quest_shared WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM quest_claims WHERE member_id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM quest_fights WHERE member_id = ?').bind(row.id).run();
+  await db.prepare('DELETE FROM quest_drops WHERE member_id = ?').bind(row.id).run();
+  await db.prepare("UPDATE quests SET board_taken_by = '' WHERE board_taken_by = ?").bind(row.id).run();
   await db.prepare('DELETE FROM members WHERE id = ?').bind(row.id).run();
   await db.prepare('DELETE FROM players WHERE id = ? AND NOT EXISTS (SELECT 1 FROM members WHERE player_id = players.id)').bind(row.player_id).run();   // a player with no characters left goes too
 }

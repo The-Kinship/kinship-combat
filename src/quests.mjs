@@ -92,10 +92,10 @@ function notices(list) {
     return { place: place(n.place, true), text: str(n.text, `Area notice ${i + 1} text`, 600), repeat: n.repeat === true };
   });
 }
-const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps, q.notices FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? ORDER BY p.updated_at';
+const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps, q.notices, q.board FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? ORDER BY p.updated_at';
 function mineView(r) {
   const list = JSON.parse(r.steps), cur = r.done ? null : list[r.step];
-  return { questId: r.quest_id, title: r.title, intro: r.intro, step: r.step, total: list.length, done: r.done === 1, failed: r.done === 2,
+  return { questId: r.quest_id, title: r.title, intro: r.intro, board: r.board || '', step: r.step, total: list.length, done: r.done === 1, failed: r.done === 2,
     notices: r.done ? [] : JSON.parse(r.notices || '[]').map((n, index) => ({ index, place: n.place, repeat: n.repeat })),   // where, never what they say
     current: cur ? { type: cur.type, npc: cur.npc, item: cur.item || '', hint: cur.hint, place: cur.place || null } : null };
 }
@@ -205,20 +205,22 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     await rate(db, 'quest-admin:' + ip, 60);
     const d = await input(request), level = checkCreate(d.adminPassword);
     if (path === '/quests/admin/list') {
-      const { results } = await db.prepare('SELECT * FROM quests ORDER BY created_at, rowid').all();
+      const { results } = await db.prepare('SELECT q.*, m.name AS taken_name FROM quests q LEFT JOIN members m ON m.id = q.board_taken_by ORDER BY q.created_at, q.rowid').all();
       const prog = (await db.prepare('SELECT p.quest_id, p.step, p.done, m.name FROM quest_progress p JOIN members m ON m.id = p.member_id ORDER BY m.name_key').all()).results;
       const claims = (await db.prepare('SELECT c.quest_id, c.step, m.name FROM quest_claims c LEFT JOIN members m ON m.id = c.member_id').all()).results;
-      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text, notices: JSON.parse(q.notices || '[]'),
+      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text, notices: JSON.parse(q.notices || '[]'), board: q.board, boardMode: q.board_mode, takenBy: q.taken_name || '',
         players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: p.done === 1, failed: p.done === 2 })),
         claims: claims.filter(c => c.quest_id === q.id).map(c => ({ step: c.step, name: c.name || '(removed)' })) })) });
     }
     if (path === '/quests/admin/save') {
       const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps), areas = JSON.stringify(notices(d.notices));
       if (level === 'scene') for (const s of list) if (s.grants) { s.grants.atk = 0; s.grants.heal = 0; }   // roll bonuses on a status are for Advocates (creation password) only
+      const board = d.board === undefined ? null : (d.board === 'main' ? 'main' : ''), boardMode = d.boardMode === 'first' ? 'first' : (d.boardMode === 'all' ? 'all' : null);
       const startPlace = d.startPlace ? JSON.stringify(place(d.startPlace)) : '', startText = d.startPlace ? str(d.startText, 'Text at the starting spot', 600) : '';
       if (d.questId) {
         const id = str(d.questId, 'Quest', 20);
-        const r = await db.prepare('UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=?, notices=? WHERE id=?').bind(title, intro, JSON.stringify(list), startPlace, startText, areas, id).run();
+        const r = await db.prepare("UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=?, notices=?, board=COALESCE(?, board), board_mode=COALESCE(?, board_mode) WHERE id=?").bind(title, intro, JSON.stringify(list), startPlace, startText, areas, board, boardMode, id).run();
+        await db.prepare("UPDATE quests SET board_taken_by = '' WHERE id = ? AND board_mode != 'first'").bind(id).run();   // only first-come jobs remember who has them
         if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
         // A shorter quest finishes anyone who was past the new end.
         await db.prepare('UPDATE quest_progress SET done = 1 WHERE quest_id = ? AND done = 0 AND step >= ?').bind(id, list.length).run();
@@ -226,7 +228,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       }
       if ((await db.prepare('SELECT count(*) AS total FROM quests').first()).total >= MAX_QUESTS) fail('There are too many quests. Delete one first.', 409);
       const id = rand(6);
-      await db.prepare('INSERT INTO quests (id, title, intro, steps, start_place, start_text, notices, created_at) VALUES (?,?,?,?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), startPlace, startText, areas, new Date().toISOString()).run();
+      await db.prepare('INSERT INTO quests (id, title, intro, steps, start_place, start_text, notices, created_at, board, board_mode) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), startPlace, startText, areas, new Date().toISOString(), board ?? '', boardMode ?? 'all').run();
       return json({ saved: true, id }, 201);
     }
     if (path === '/quests/admin/delete') {
@@ -234,6 +236,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       await db.prepare('DELETE FROM quest_progress WHERE quest_id = ?').bind(id).run();
       await db.prepare('DELETE FROM quest_fights WHERE quest_id = ?').bind(id).run();
       await db.prepare('DELETE FROM quest_claims WHERE quest_id = ?').bind(id).run();
+      await db.prepare('DELETE FROM quest_drops WHERE quest_id = ?').bind(id).run();
       const r = await db.prepare('DELETE FROM quests WHERE id = ?').bind(id).run();
       if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
       return json({ deleted: true });
@@ -247,7 +250,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       if (!to) fail('No member has that name.', 404);
       const id = str(d.questId, 'Quest', 20);
       if (!(await db.prepare('SELECT id FROM quests WHERE id = ?').bind(id).first())) fail('That quest no longer exists.', 404);
-      if (path === '/quests/admin/unassign') { await db.prepare('DELETE FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); return json({ unassigned: true, to: to.name }); }
+      if (path === '/quests/admin/unassign') { await db.prepare('DELETE FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); await db.prepare("UPDATE quests SET board_taken_by = '' WHERE id = ? AND board_taken_by = ?").bind(id, to.id).run(); await db.prepare('DELETE FROM quest_drops WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(to.id, id).run(); return json({ unassigned: true, to: to.name }); }
       const have = await db.prepare('SELECT done FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(to.id, id).first();
       if (!have && (await db.prepare('SELECT count(*) AS total FROM quest_progress WHERE member_id = ? AND done = 0').bind(to.id).first()).total >= MAX_ACTIVE) fail(`${to.name} already has ${MAX_ACTIVE} quests going.`, 409);
       await db.prepare('INSERT INTO quest_progress (member_id, quest_id, step, done, updated_at) VALUES (?,?,0,0,?) ON CONFLICT(member_id, quest_id) DO UPDATE SET step = 0, done = 0, updated_at = excluded.updated_at').bind(to.id, id, new Date().toISOString()).run();
@@ -352,7 +355,49 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
     const r = await db.prepare('DELETE FROM quest_progress WHERE member_id = ? AND quest_id = ? AND done = 2').bind(me.id, id).run();
     if (r.meta.changes !== 1) fail('Only a failed quest can be deleted.', 409);
     await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, id).run();
+    await db.prepare("UPDATE quests SET board_taken_by = '' WHERE id = ? AND board_taken_by = ?").bind(id, me.id).run();
     return json({ deleted: true });
+  }
+
+  // ---------- Job board: SMs post quests, members take them ----------
+  // A job is a normal quest with board = 'main'. Mode 'all': everyone can take it once. Mode 'first': whoever takes it first has it; giving it up puts it back.
+  // Jobs you already took or finished never show, and a job you gave up after making progress cannot be taken again (so early rewards cannot be repeated).
+  if (!post && path === '/quests/jobs') {
+    const { results } = await db.prepare("SELECT q.id, q.title, q.intro, q.steps, q.board_mode FROM quests q WHERE q.board = 'main' AND (q.board_mode = 'all' OR q.board_taken_by = '') AND NOT EXISTS (SELECT 1 FROM quest_progress p WHERE p.quest_id = q.id AND p.member_id = ?) AND NOT EXISTS (SELECT 1 FROM quest_drops d WHERE d.quest_id = q.id AND d.member_id = ?) ORDER BY q.created_at, q.rowid").bind(me.id, me.id).all();
+    return json({ jobs: results.map(q => ({ questId: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps).length, firstCome: q.board_mode === 'first' })) });
+  }
+  if (post && path === '/quests/jobs/take') {
+    await rate(db, 'job-take:' + me.id, 30);
+    const questId = str((await input(request)).questId, 'Job', 20);
+    const q = await db.prepare("SELECT id, board_mode FROM quests WHERE id = ? AND board = 'main'").bind(questId).first();
+    if (!q) fail('That job is no longer on the board.', 404);
+    if (await db.prepare('SELECT 1 AS x FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(me.id, questId).first()) fail('You have already taken this job.', 409);
+    if (await db.prepare('SELECT 1 AS x FROM quest_drops WHERE member_id = ? AND quest_id = ?').bind(me.id, questId).first()) fail('You gave this job up, so you cannot take it again.', 409);
+    if ((await db.prepare('SELECT count(*) AS total FROM quest_progress WHERE member_id = ? AND done = 0').bind(me.id).first()).total >= MAX_ACTIVE) fail(`You already have ${MAX_ACTIVE} quests going.`, 409);
+    const first = q.board_mode === 'first';
+    if (first) {   // one winner, even if two people press Take at the same moment
+      const c = await db.prepare("UPDATE quests SET board_taken_by = ? WHERE id = ? AND board_taken_by = ''").bind(me.id, questId).run();
+      if (c.meta.changes !== 1) fail('Someone else has already taken this job.', 409);
+    }
+    const r = await db.prepare('INSERT INTO quest_progress (member_id, quest_id, step, done, updated_at) VALUES (?,?,0,0,?) ON CONFLICT DO NOTHING').bind(me.id, questId, new Date().toISOString()).run();
+    if (r.meta.changes !== 1) {
+      if (first) await db.prepare("UPDATE quests SET board_taken_by = '' WHERE id = ? AND board_taken_by = ?").bind(questId, me.id).run();
+      fail('You have already taken this job.', 409);
+    }
+    return json({ taken: true }, 201);
+  }
+  if (post && path === '/quests/jobs/drop') {
+    await rate(db, 'job-drop:' + me.id, 30);
+    const questId = str((await input(request)).questId, 'Job', 20);
+    const q = await db.prepare("SELECT id FROM quests WHERE id = ? AND board = 'main'").bind(questId).first();
+    const p = q ? await db.prepare('SELECT step, done FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(me.id, questId).first() : null;
+    if (!p) fail('You do not have that job.', 404);
+    if (p.done === 1) fail('You have already finished that job.', 409);
+    await db.prepare('DELETE FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(me.id, questId).run();
+    await db.prepare('DELETE FROM quest_fights WHERE member_id = ? AND quest_id = ?').bind(me.id, questId).run();
+    await db.prepare("UPDATE quests SET board_taken_by = '' WHERE id = ? AND board_taken_by = ?").bind(questId, me.id).run();   // a first-come job goes back on the board
+    if (p.step > 0) await db.prepare('INSERT INTO quest_drops (member_id, quest_id) VALUES (?,?) ON CONFLICT DO NOTHING').bind(me.id, questId).run();
+    return json({ dropped: true });
   }
 
   // Spots where a quest can be picked up. Only the place goes out, never the quest's name or what it says.

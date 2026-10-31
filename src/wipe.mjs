@@ -8,7 +8,7 @@ import { findMember } from './lookup.mjs';
 
 export const KEEP_TABLES = ['members', 'players', 'profiles', 'marks', 'bans', 'settings'];
 export const OPTIONAL_TABLES = ['quests'];
-export const WIPE_TABLES = ['items', 'stashes', 'signs', 'gold_log', 'statuses', 'quest_progress', 'quest_claims', 'quest_fights', 'party_links', 'quest_shared', 'mails', 'finds', 'worn', 'gear_notices', 'duels', 'reports', 'rooms', 'scenes', 'rate_limits'];
+export const WIPE_TABLES = ['items', 'stashes', 'signs', 'gold_log', 'statuses', 'quest_progress', 'quest_claims', 'quest_fights', 'quest_drops', 'party_links', 'quest_shared', 'mails', 'finds', 'worn', 'gear_notices', 'duels', 'reports', 'rooms', 'scenes', 'rate_limits'];
 export const CONFIRM = 'WIPE EVERYTHING';
 export const CONFIRM_ALL = 'WIPE ALL CHARACTERS';   // needed instead when nobody is kept
 
@@ -50,5 +50,6 @@ export async function handleWipe(request, db, path, { json, input, rate, ip, che
   for (const m of others) await removeMemberData(db, m);
   for (const t of tables) await db.prepare(`DELETE FROM ${t}`).run();
   await db.prepare('UPDATE members SET gold = 0').run();
+  await db.prepare("UPDATE quests SET board_taken_by = ''").run();   // first-come jobs are free again
   return json({ wipe: { keep: keep.map(m => m.name), remove: others.map(m => m.name), counts: {}, done: true } });
 }
