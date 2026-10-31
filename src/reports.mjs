@@ -2,6 +2,7 @@
 // Reports: members tell the SMs about a bug or about someone abusing the system. Only Advocates (creation password) can read them.
 import { fail } from './engine.mjs';
 import { who, str } from './items.mjs';
+import { amountOf, balance } from './bank.mjs';
 
 const view = r => ({ id: r.id, member: r.member_name, kind: r.kind, about: r.about, text: r.text, createdAt: r.created_at, done: !!r.done });
 
@@ -29,6 +30,18 @@ export async function handleReports(request, db, path, { json, input, rate, ip, 
   }
 
   const me = await who(db, request);
+  if (post && path === '/reports/exchange') {
+    await rate(db, 'exchange:' + me.id, 5);
+    const d = await input(request), amount = amountOf(d.amount);
+    if ((await balance(db, me.id)) < amount) fail('You do not have that much gold.');
+    const open = await db.prepare("SELECT count(*) AS n FROM reports WHERE member_id = ? AND kind = 'exchange' AND done = 0").bind(me.id).first();
+    if (open.n >= 1) fail('You already have an exchange request waiting. Please wait for a banker to finish it.', 409);
+    const total = await db.prepare('SELECT count(*) AS n FROM reports').first();
+    if (total.n >= 500) fail('The request box is full right now. Please tell a banker in game.', 503);
+    const text = `${me.name} requests a ${amount.toLocaleString('en-US')} gold exchange (${amount.toLocaleString('en-US')} gil). Gold in their purse right now: ${(await balance(db, me.id)).toLocaleString('en-US')}.`;
+    await db.prepare('INSERT INTO reports (member_id, member_name, kind, about, text, created_at) VALUES (?,?,?,?,?,?)').bind(me.id, me.name, 'exchange', '', text, new Date().toISOString()).run();
+    return json({ sent: true, amount }, 201);
+  }
   if (post && path === '/reports') {
     await rate(db, 'report:' + me.id, 10);
     const d = await input(request);
