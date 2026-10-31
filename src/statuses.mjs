@@ -3,7 +3,7 @@
 // (or an Advocate with the creation password), so nobody can pester another member.
 import { fail } from './engine.mjs';
 import { randomInt } from 'node:crypto';
-import { who, str } from './items.mjs';
+import { who, str, alphaGear } from './items.mjs';
 import { applyStatus, bonus, carriedRows, combatTotals, MAX_STATUS } from './status-core.mjs';
 
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
@@ -66,7 +66,13 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
   }
   if (post && path === '/statuses/self') {
     await rate(db, 'status-self:' + me.id, 20);
-    await applyStatus(db, me.id, { ...fields(await input(request)), sourceId: 'self' });
+    const d = await input(request), extra = {};
+    if (await alphaGear(db)) {   // alpha testers can set up sicknesses and curses on themselves, to try diagnosing
+      const type = d.statusType === undefined || d.statusType === null ? '' : d.statusType;
+      if (!['', 'sickness', 'curse'].includes(type)) fail('A status can be a sickness, a curse, or neither.');
+      if (type) { extra.type = type; extra.cure = str(d.cureInfo, 'Cure information', 200, false); }
+    }
+    await applyStatus(db, me.id, { ...fields(d), ...extra, sourceId: 'self' });
     return json({ added: true }, 201);
   }
   if (post && path === '/statuses/diagnose') {
