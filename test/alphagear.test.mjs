@@ -67,3 +67,17 @@ test('alpha mode can cap how many characters register',async t=>{
   await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:false});                                       // cap only applies while alpha is on
   assert.equal((await reg('Anyone Else')).status,201);
 });
+
+test('alpha mode lets testers make themselves sick or cursed so they can try diagnosing',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await call('POST','/items/register',{name:'Mira',memberPassword:'fcpass'});
+  const body={name:'Cold sweats',icon:'game:10205',isDebuff:true,statusType:'sickness',cureInfo:'Drink warm tea.'};
+  assert.equal((await call('POST','/statuses/self',body,a.token)).status,201);
+  let dx=await call('POST','/statuses/diagnose',{kind:'sickness',patient:'Mira'},a.token);
+  assert.equal(dx.condition,'');   // not alpha: it was a plain status
+  await call('POST','/system/admin/alpha',{adminPassword:'dmpass',on:true});
+  assert.equal((await call('POST','/statuses/self',{...body,name:'Fever'},a.token)).status,201);
+  assert.equal((await call('POST','/statuses/self',{...body,name:'Bad',statusType:'weird'},a.token)).status,400);
+  let found='';for(let i=0;i<60&&!found;i++){db.sqlite.exec('DELETE FROM rate_limits');found=(await call('POST','/statuses/diagnose',{kind:'sickness',patient:'Mira'},a.token)).cure}
+  assert.equal(found,'Drink warm tea.');
+});
