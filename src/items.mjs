@@ -198,6 +198,20 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     if (await alphaGear(db)) await grantAlphaGold(db, id);
     return json({ token, memberId: id, name, recoveryCode: recovery ? `${recovery.slice(0, 4)}-${recovery.slice(4, 8)}-${recovery.slice(8)}` : null, linked: !recovery }, 201);
   }
+  if (post && path === '/items/rename') {
+    await rate(db, 'items-rename:' + ip, 10);
+    const me = await who(db, request), data = await input(request);
+    const name = str(data.name, 'Your name', 40); if (name.length < 2) fail('Your name must be at least 2 characters.');
+    const key = nameKey(name);
+    if (name === me.name) fail('That is already your name.');
+    if (await db.prepare('SELECT 1 AS ok FROM bans WHERE name_key = ?').bind(key).first()) fail('That name cannot be used. Please speak to an Advocate.', 403);
+    const taken = await db.prepare('SELECT id FROM members WHERE name_key = ? AND id != ?').bind(key, me.id).first();
+    if (taken) fail('That name is already registered by someone else.', 409);
+    await db.prepare('UPDATE members SET name = ?, name_key = ? WHERE id = ?').bind(name, key, me.id).run();
+    await db.prepare('UPDATE marks SET name = ?, name_key = ? WHERE name_key = ?').bind(name, key, nameKey(me.name)).run();
+    await db.prepare('UPDATE reports SET member_name = ? WHERE member_id = ?').bind(name, me.id).run();
+    return json({ name });
+  }
   if (post && path === '/items/recover') {
     await rate(db, 'items-recover:' + ip, 10);
     const data = await input(request), given = recoveryKey(data.recoveryCode), wanted = data.name === undefined || data.name === '' ? '' : str(data.name, 'Your name', 40);
