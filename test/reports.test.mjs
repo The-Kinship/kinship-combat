@@ -31,3 +31,19 @@ test('reports: members send, only Advocates read, mark done and delete',async t=
   db.sqlite.exec('DELETE FROM rate_limits');
   assert.equal((await call('POST','/reports',{kind:'bug',text:'one too many'},a)).status,429);
 });
+
+test('exchange tickets: need the gold, one open at a time, Advocates see them',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await join(call,'Mira');
+  assert.equal((await call('POST','/reports/exchange',{amount:100})).status,401);
+  assert.equal((await call('POST','/reports/exchange',{amount:0},a)).status,400);
+  assert.equal((await call('POST','/reports/exchange',{amount:100},a)).status,400);
+  assert.equal((await call('POST','/bank/admin/mint',{bankPassword:'bankpass',to:'Mira',amount:24000,note:'pay'})).status,201);
+  assert.equal((await call('POST','/reports/exchange',{amount:24000},a)).status,201);
+  assert.equal((await call('POST','/reports/exchange',{amount:10},a)).status,409);
+  const list=await call('POST','/reports/admin/list',{adminPassword:'dmpass'});
+  const r=list.reports.find(x=>x.kind==='exchange');
+  assert.ok(r);assert.match(r.text,/Mira requests a 24,000 gold exchange/);
+  await call('POST','/reports/admin/done',{adminPassword:'dmpass',id:r.id});
+  assert.equal((await call('POST','/reports/exchange',{amount:10},a)).status,201);
+});
