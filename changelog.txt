@@ -1,3 +1,5 @@
+0.62.0: Bank tab: new Exchange gold for gil section. Submit an exchange ticket and the bankers see it in SM Tools and mail you the gil.
+0.61.0: You can now change the name you registered with. Inventory tab, Change my name. Your items, gold and everything else stay with you.
 0.60.0: More room. You can now hold 20 item slots (was 10) and have 10 statuses (was 6). New "Plugin Only" tag SMs can give in SM Tools, for members who use the plugin without joining the in-game FC.
 0.59.0: Carried items. An item can now give its status just by being in your main inventory, with no need to use it. Several copies give it once, it does not use up your six status slots, and it cannot be cured or removed while you hold the item.
 0.58.0: New Jobs tab: a board of quests posted by the SMs. Take a job and do it for the reward. Some jobs are open to everyone, some are first come, first served (and go back on the board if given up).
