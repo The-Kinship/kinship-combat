@@ -42,7 +42,7 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
     if (path === '/statuses/admin/remove') {
       const r = await db.prepare('DELETE FROM statuses WHERE id = ?').bind(str(d.statusId, 'Status', 20)).run();
       if (r.meta.changes !== 1) fail('That status is already gone.', 404);
-      return json({ removed: true });
+      return json({ cleared: true });
     }
     fail('Endpoint not found.', 404);
   }
@@ -95,5 +95,5 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
   if (!row) fail('That status is already gone.', 404);
   if (row.member_id !== me.id && row.source_id !== me.id) fail('Only the person who has a status, or whoever gave it, can remove it.', 403);
   await db.prepare('DELETE FROM statuses WHERE id = ?').bind(m[1]).run();
-  return json({ removed: true });
+  return json({ cleared: true });
 }
