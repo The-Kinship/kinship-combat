@@ -4,7 +4,7 @@
 import { fail } from './engine.mjs';
 import { randomInt } from 'node:crypto';
 import { who, str } from './items.mjs';
-import { applyStatus, bonus, combatTotals, MAX_STATUS } from './status-core.mjs';
+import { applyStatus, bonus, carriedRows, combatTotals, MAX_STATUS } from './status-core.mjs';
 
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
 function fields(d) {
@@ -57,7 +57,12 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
       id: `combat-${c.kind}-${c.memberId}`, memberName: c.name, name: c.kind === 'buff' ? 'Combat Buff' : 'Combat Debuff', icon: ICON_COMBAT, isDebuff: c.kind === 'debuff',
       description: 'All bonuses to rolls added together: statuses, items and worn gear.', secondsLeft: null, mine: c.memberId === me.id, canRemove: false, atkBonus: c.atk, healBonus: c.heal, self: false, combined: true,
     }));
-    return json({ statuses: results.map(r => view(r, me.id, now)).concat(combined), maxStatuses: MAX_STATUS });
+    // Statuses from carried items, shown to everyone like any other status. They do not use up the six slots and cannot be removed.
+    const carried = (await carriedRows(db)).map(c => ({
+      id: `carried-${c.member_id}-${String(c.st_name).toLowerCase().replace(/\s+/g, '-').slice(0, 40)}`, memberName: c.member_name, name: c.st_name, icon: c.st_icon || c.icon, description: c.st_desc, isDebuff: !!c.st_debuff,
+      secondsLeft: null, mine: c.member_id === me.id, canRemove: false, atkBonus: c.st_atk || 0, healBonus: c.st_heal || 0, self: false, carried: true,
+    }));
+    return json({ statuses: results.map(r => view(r, me.id, now)).concat(carried, combined), maxStatuses: MAX_STATUS });
   }
   if (post && path === '/statuses/self') {
     await rate(db, 'status-self:' + me.id, 20);
@@ -73,8 +78,10 @@ export async function handleStatuses(request, db, path, { json, input, rate, ip,
     if (!patient) fail('No member has that name.', 404);
     const roll = 1 + randomInt(20);
     const found = await db.prepare('SELECT name, st_cure FROM statuses WHERE member_id = ? AND st_type = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at LIMIT 1').bind(patient.id, kind, new Date().toISOString()).first();
-    const ok = roll >= 15 && !!found;
-    return json({ roll, patient: patient.name, success: ok, condition: ok ? found.name : '', cure: ok ? found.st_cure : '' });
+    const carriedFound = found ? null : (await carriedRows(db, patient.id)).find(c => c.st_type === kind);   // a carried curse or sickness can be read too
+    const hit = found || (carriedFound ? { name: carriedFound.st_name, st_cure: carriedFound.st_cure } : null);
+    const ok = roll >= 15 && !!hit;
+    return json({ roll, patient: patient.name, success: ok, condition: ok ? hit.name : '', cure: ok ? hit.st_cure : '' });
   }
   const m = path.match(/^\/statuses\/([a-f0-9]{12})\/remove$/);
   if (!m || !post) fail('Endpoint not found.', 404);

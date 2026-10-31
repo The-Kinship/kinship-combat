@@ -50,12 +50,14 @@ export function itemFields(data, allowBonus = false, gearOnly = false) {
   if (!useText) useLabel = '';
   const requires = str(data.requires, 'Required item', 40, false);
   if (requires && !useText) fail('An item that needs something has to have an action, like Open. Fill in "What happens".');
+  const carried = data.carried === true ? 1 : 0;   // the status is active just by holding the item, so no action is needed
   const stName = str(data.stName, 'Status name', 30, false), stDesc = str(data.stDesc, 'Status description', 200, false), cures = str(data.cures, 'Status to remove', 30, false);
   const stIcon = str(data.stIcon, 'Status icon', 80, false);
   if (stIcon && !ICON.test(stIcon)) fail('Choose an icon for the status.');
   const stMinutes = Number.isInteger(data.stMinutes) ? data.stMinutes : 0;
   if (stMinutes < 0 || stMinutes > 43200) fail('A status can last from 1 minute to 30 days. Use 0 to last until removed.');
-  if ((stName || cures) && !useText) fail('An item that gives or removes a status needs an action. Fill in "What happens".');
+  if (carried && !stName) fail('A carried item needs a status. Fill in "Gives the status".');
+  if (((stName && !carried) || cures) && !useText) fail('An item that gives or removes a status needs an action. Fill in "What happens".');
   const stType = data.stType === undefined || data.stType === null ? '' : data.stType;
   if (!['', 'sickness', 'curse'].includes(stType)) fail('A status can be a sickness, a curse, or neither.');
   const stCure = str(data.stCure, 'Cure information', 200, false);
@@ -68,7 +70,7 @@ export function itemFields(data, allowBonus = false, gearOnly = false) {
   const gearAtk = allowBonus && wearSlot ? bonus(data.gearAtk, 'Gear attack bonus') : 0, gearHeal = allowBonus && wearSlot ? bonus(data.gearHeal, 'Gear heal bonus') : 0;   // only Advocates can give gear a roll bonus
   const icon = str(data.icon, 'Icon', 80);
   if (!ICON.test(icon)) fail('Choose an icon for the item.');
-  return { name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, wearSlot, lifespanDays, gearAtk, gearHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
+  return { carried, name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName && !carried ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, wearSlot, lifespanDays, gearAtk, gearHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
 }
 // A reagent can name up to three other items it combines with, and say what they make. Stored as JSON: { with: [names], result: itemFields }.
 function recipeJson(data, allowBonus = false, gearOnly = false) {
@@ -87,7 +89,7 @@ export const view = (row, meId) => {
   const mine = row.creator_id === meId && row.owner_id === meId;
   const v = { id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine, canCombine: !!row.recipe, requires: row.requires || '', requiresConsume: !!row.requires_consume, holds: row.holds || 0 };
   if (row.wear_slot) { v.wearSlot = row.wear_slot; v.gearAtk = row.gear_atk || 0; v.gearHeal = row.gear_heal || 0; v.lifespanDays = row.lifespan_days || 0; v.wornAt = row.worn_at || ''; v.breaksAt = row.worn_at && row.lifespan_days ? new Date(Date.parse(row.worn_at) + row.lifespan_days * 86400000).toISOString() : ''; }
-  if (mine) { v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.combineFail = r.failChance || 0; v.result = asView(r.result); } }
+  if (mine) { v.carried = !!row.carried; v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.combineFail = r.failChance || 0; v.result = asView(r.result); } }
   return v;
 };
 // Labels the SMs can put on a registered character. They show at the bottom of that character's roster entry and profile card.
@@ -114,7 +116,7 @@ const setGear = (db, id, f) => f.wearSlot ? db.prepare('UPDATE items SET wear_sl
 const cleanOrphans = db => db.prepare("DELETE FROM items WHERE length(owner_id) = 17 AND substr(owner_id, 1, 1) = 'i' AND substr(owner_id, 2) NOT IN (SELECT id FROM items)").run();
 // Stacking: every unit is still its own row, but identical units (same maker, same text, same everything) share a slot, STACK to a slot.
 // An item with things inside it never stacks. The first unit of a stack stands for it when the plugin uses, gives or stashes it.
-const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'st_atk', 'st_heal', 'wear_slot', 'gear_atk', 'gear_heal', 'lifespan_days', 'worn_at', 'cures', 'recipe', 'consumable', 'starts_quest'];
+const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'st_atk', 'st_heal', 'wear_slot', 'gear_atk', 'gear_heal', 'lifespan_days', 'worn_at', 'cures', 'recipe', 'consumable', 'starts_quest', 'carried'];
 const keyOf = r => r.holds > 0 ? 'id:' + r.id : JSON.stringify(KEYS.map(k => r[k] ?? ''));
 export function stacks(rows) {
   const groups = new Map(), at = new Map(rows.map((r, i) => [r.id, i]));
@@ -250,6 +252,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
         await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, starts_quest, created_at, st_atk, st_heal) VALUES (?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
           .bind(made[i], owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString(), f.stAtk, f.stHeal).run();
         await setGear(db, made[i], f);
+        if (f.carried) await db.prepare('UPDATE items SET carried = 1 WHERE id = ?').bind(made[i]).run();
       }
       if ((await ownerSlots(db, owner)) > cap) {
         for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
@@ -312,7 +315,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const id = rand(8);
       const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at, st_atk, st_heal) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
         .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), f.stAtk, f.stHeal, me.id, CAPACITY * STACK).run();
-      if (r.meta.changes === 1) { made.push(id); await setGear(db, id, f); } else break;
+      if (r.meta.changes === 1) { made.push(id); await setGear(db, id, f); if (f.carried) await db.prepare('UPDATE items SET carried = 1 WHERE id = ?').bind(id).run(); } else break;
     }
     if (made.length < qty || (await ownerSlots(db, me.id)) > CAPACITY) {
       for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
@@ -333,6 +336,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     const body = await input(request), alpha = await alphaGear(db), f = itemFields(body, alpha, true), recipe = recipeJson(body, alpha, true);
     for (const unit of await groupIds(db, me.id, id)) {
       await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, st_atk=?, st_heal=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.stAtk, f.stHeal, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
+    await db.prepare('UPDATE items SET carried=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.carried, unit, me.id, me.id).run();
     await db.prepare('UPDATE items SET wear_slot=?, gear_atk=?, gear_heal=?, lifespan_days=? WHERE id=? AND owner_id=? AND worn_at IS NULL').bind(f.wearSlot, f.gearAtk, f.gearHeal, f.lifespanDays, unit, me.id).run();   // gear settings can't change once it has been worn
     }
   } else if (route === 'delete') {
@@ -359,8 +363,10 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
     for (const p of picked) await purge(db, p.id);
     // Some recipes can fail: everything put in is used up and nothing is made.
     if (recipe.failChance > 0 && randomInt(100) < recipe.failChance) return json({ failed: true, used: picked.map(p => p.name), items: await inventory(db, me.id) });
+    const resultId = rand(8);
     await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at, st_atk, st_heal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(rand(8), me.id, item.creator_id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), f.stAtk || 0, f.stHeal || 0).run();
+      .bind(resultId, me.id, item.creator_id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), f.stAtk || 0, f.stHeal || 0).run();
+    if (f.carried) await db.prepare('UPDATE items SET carried = 1 WHERE id = ?').bind(resultId).run();
     return json({ combined: f.name, used: picked.map(p => p.name), items: await inventory(db, me.id) });
   } else if (route === 'seal') {
     const data = await input(request), inner = str(data.itemId, 'Item', 20);
@@ -401,9 +407,9 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       key = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND id != ? AND lower(name) = ? AND creator_id IN (?, 'dm') LIMIT 1").bind(me.id, id, nameKey(item.requires), item.creator_id).first();
       if (!key) fail(`You need ${item.requires} to do that.`, 409);
     }
-    const curing = item.cures ? await findActive(db, me.id, item.cures) : null;
+    const curing = item.cures ? await findActive(db, me.id, item.cures, false) : null;   // a carried status cannot be cured
     if (item.cures && !curing) fail(`You have no ${item.cures} to cure.`, 409);
-    if (item.st_name) await checkRoom(db, me.id, item.st_name);
+    if (item.st_name && !item.carried) await checkRoom(db, me.id, item.st_name);
     const held = await ownerRows(db, 'i' + id);
     const eaten = item.consumable && !item.starts_quest;   // a quest letter stays until the quest is accepted
     const gone = [];
@@ -417,13 +423,13 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       if (r.meta.changes !== 1) fail('That item is already gone.', 409);
     }
     if (item.cures) await removeByName(db, me.id, item.cures);
-    if (item.st_name) await applyStatus(db, me.id, { name: item.st_name, icon: item.st_icon || item.icon, description: item.st_desc, isDebuff: !!item.st_debuff, minutes: item.st_minutes, type: item.st_type || '', cure: item.st_cure || '', atk: item.st_atk || 0, heal: item.st_heal || 0, sourceId: item.creator_id });
+    if (item.st_name && !item.carried) await applyStatus(db, me.id, { name: item.st_name, icon: item.st_icon || item.icon, description: item.st_desc, isDebuff: !!item.st_debuff, minutes: item.st_minutes, type: item.st_type || '', cure: item.st_cure || '', atk: item.st_atk || 0, heal: item.st_heal || 0, sourceId: item.creator_id });
     let offer = null;
     if (item.starts_quest && item.creator_id === 'dm') {
       const q = await db.prepare('SELECT id, title, intro FROM quests WHERE id = ?').bind(item.starts_quest).first();
       if (q && !(await db.prepare('SELECT 1 AS x FROM quest_progress WHERE member_id = ? AND quest_id = ?').bind(me.id, q.id).first())) offer = { questId: q.id, title: q.title, intro: q.intro, itemId: id };
     }
-    return json({ offer, text: item.use_text, statusGained: item.st_name || '', statusCured: curing ? curing.name : '', consumed: !!item.consumable, gained: held.map(h => h.name), keyUsed: key && item.requires_consume ? item.requires : '', items: await inventory(db, me.id) });
+    return json({ offer, text: item.use_text, statusGained: item.carried ? '' : item.st_name || '', statusCured: curing ? curing.name : '', consumed: !!item.consumable, gained: held.map(h => h.name), keyUsed: key && item.requires_consume ? item.requires : '', items: await inventory(db, me.id) });
   }
   return json({ ok: true, items: await inventory(db, me.id) });
 }
