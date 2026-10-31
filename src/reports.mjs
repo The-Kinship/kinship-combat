@@ -16,6 +16,9 @@ export async function handleReports(request, db, path, { json, input, rate, ip, 
       const { results } = await db.prepare('SELECT * FROM reports ORDER BY done, id DESC LIMIT 200').all();
       return json({ reports: results.map(view) });
     }
+    if (path === '/reports/admin/count') {
+      return json({ open: (await db.prepare('SELECT count(*) AS n FROM reports WHERE done = 0').first()).n });
+    }
     if (path === '/reports/admin/done') {
       const r = await db.prepare('UPDATE reports SET done = 1 - done WHERE id = ?').bind(Number(d.id)).run();
       if (r.meta.changes !== 1) fail('That report is already gone.', 404);
