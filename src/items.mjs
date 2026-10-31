@@ -6,7 +6,7 @@ import { fail } from './engine.mjs';
 import { earn } from './bank.mjs';
 import { applyStatus, bonus, checkRoom, findActive, removeByName } from './status-core.mjs';
 
-const CAPACITY = 10, MAX_MEMBERS = 300, MAX_PER_PLAYER = 10, MAX_ITEMS = 3000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
+const CAPACITY = 20, MAX_MEMBERS = 300, MAX_PER_PLAYER = 10, MAX_ITEMS = 10000, MAX_HELD = 3, STASH_CAP = 20, MAX_WITH = 3;
 export const CAP = CAPACITY;
 export const WEAR_SLOTS = ['', 'helm', 'chest', 'cloak', 'legs', 'feet', 'ring', 'necklace', 'weapon'];
 export const STACK = 10;   // identical items share a slot, up to this many per slot
@@ -93,7 +93,7 @@ export const view = (row, meId) => {
   return v;
 };
 // Labels the SMs can put on a registered character. They show at the bottom of that character's roster entry and profile card.
-export const TAGS = ['Harbinger', 'Advocate', 'SM', 'Banker', 'Onyx', 'Vanguard', 'Life Watch', 'Ember', 'Kin', 'Alt'];
+export const TAGS = ['Harbinger', 'Advocate', 'SM', 'Banker', 'Onyx', 'Vanguard', 'Life Watch', 'Ember', 'Kin', 'Plugin Only', 'Alt'];
 export const tagList = s => TAGS.filter(t => String(s || '').split(',').includes(t));
 export async function who(db, request) {
   const token = (request.headers.get('authorization') || '').replace(/^Bearer /, '');

@@ -3,7 +3,7 @@
 import { fail } from './engine.mjs';
 import { randomBytes } from 'node:crypto';
 
-export const MAX_STATUS = 6;
+export const MAX_STATUS = 10;
 // A roll bonus a status gives to attacks and to heals. Only Advocates, their items and their quests can set one.
 export const bonus = (v, name) => { if (v === undefined || v === null || v === '') return 0; if (!Number.isInteger(v) || v < -5 || v > 5) fail(`${name} must be a whole number from -5 to 5.`); return v; };
 /** Statuses an item gives just by being in someone's main inventory ("carried" items). One per name, so three crystals give one status. They never use up
