@@ -47,3 +47,15 @@ test('exchange tickets: need the gold, one open at a time, Advocates see them',a
   await call('POST','/reports/admin/done',{adminPassword:'dmpass',id:r.id});
   assert.equal((await call('POST','/reports/exchange',{amount:10},a)).status,201);
 });
+
+test('the SM count shows only open reports and needs the password',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await join(call,'Mira');
+  assert.equal((await call('POST','/reports/admin/count',{adminPassword:'nope'})).status,403);
+  assert.equal((await call('POST','/reports/admin/count',{adminPassword:'dmpass'})).open,0);
+  await call('POST','/reports',{kind:'bug',text:'x'},a);await call('POST','/reports',{kind:'abuse',about:'Kael',text:'y'},a);
+  assert.equal((await call('POST','/reports/admin/count',{adminPassword:'dmpass'})).open,2);
+  const id=(await call('POST','/reports/admin/list',{adminPassword:'dmpass'})).reports[0].id;
+  await call('POST','/reports/admin/done',{adminPassword:'dmpass',id});
+  assert.equal((await call('POST','/reports/admin/count',{adminPassword:'dmpass'})).open,1);
+});
