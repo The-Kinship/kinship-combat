@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
-function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql','0018_rooms.sql','0019_mail.sql','0020_mail_look.sql','0021_armory.sql','0022_duels.sql','0023_profiles.sql','0024_profile_name.sql','0025_reports.sql','0026_marks.sql', '0027_settings.sql','0028_alpha_gold.sql','0029_quest_notices.sql','0030_finds.sql', '0031_party_quests.sql', '0032_member_tags.sql','0033_job_board.sql','0034_carried_status.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
+function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql','0018_rooms.sql','0019_mail.sql','0020_mail_look.sql','0021_armory.sql','0022_duels.sql','0023_profiles.sql','0024_profile_name.sql','0025_reports.sql','0026_marks.sql', '0027_settings.sql','0028_alpha_gold.sql','0029_quest_notices.sql','0030_finds.sql', '0031_party_quests.sql', '0032_member_tags.sql','0033_job_board.sql','0034_carried_status.sql','0035_zone_index.sql','0036_item_link.sql','0037_iron_pack_tag.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
 const HERE={territory:339,x:10.5,y:2,z:-30.25};const stand=p=>{globalThis.__here=p};stand(HERE);
 const mk=db=>async(method,path,data,token)=>{const h=globalThis.__here;if(h){if(method==='GET')path+=(path.includes('?')?'&':'?')+`t=${h.territory}&x=${h.x}&y=${h.y}&z=${h.z}${h.room?`&r=${h.room}`:''}`;else if(data&&typeof data==='object'&&!data.at)data={...data,at:{...h}}}const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass','fcpass','bankpass');return {status:r.status,...await r.json()}};
 const spot={name:'Old well',zone:'Mist',territory:339,map:72,x:10.5,y:2,z:-30.25,mapX:11.2,mapY:9.8};
@@ -41,8 +41,8 @@ test('put and take items, with limits on both sides',async t=>{
   const taken=await call('POST',`/stashes/${st.id}/take`,{itemId:item.id},b.token);assert.equal(taken.status,200);
   assert.equal(taken.items.length,1);assert.equal(taken.stashItems.length,0);
   assert.equal(taken.items[0].canEdit,false);
-  for(let i=0;i<10;i++)await call('POST','/items/admin/grant',{...cookie,name:'G'+i,to:'Mira',adminPassword:'dmpass'});
-  const inv=(await call('GET','/items/me',undefined,a.token)).items;assert.equal(inv.length,10);
+  for(let i=0;i<20;i++)await call('POST','/items/admin/grant',{...cookie,name:'G'+i,to:'Mira',adminPassword:'dmpass'});
+  const inv=(await call('GET','/items/me',undefined,a.token)).items;assert.equal(inv.length,20);
   assert.equal((await call('POST',`/stashes/${st.id}/put`,{itemId:inv[0].id},a.token)).status,200);
   assert.equal((await call('POST',`/stashes/${st.id}/take`,{itemId:inv[0].id},b.token)).status,200);
   assert.equal((await call('POST',`/stashes/${st.id}/take`,{itemId:'nothing'},a.token)).status,404);
@@ -51,12 +51,12 @@ test('put and take items, with limits on both sides',async t=>{
 test('a stash holds twenty, and a full inventory cannot take more',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira'),b=await join(call,'Kael');
   const st=(await call('POST','/stashes',spot,a.token)).stash;
-  for(let round=0;round<2;round++){for(let i=0;i<10;i++)await call('POST','/items',{...cookie,name:`C${round}${i}`},a.token);
+  for(let round=0;round<1;round++){for(let i=0;i<20;i++)await call('POST','/items',{...cookie,name:`C${round}${i}`},a.token);
     for(const it of (await call('GET','/items/me',undefined,a.token)).items)assert.equal((await call('POST',`/stashes/${st.id}/put`,{itemId:it.id},a.token)).status,200)}
   await call('POST','/items',cookie,a.token);
   const extra=(await call('GET','/items/me',undefined,a.token)).items[0];
   const full=await call('POST',`/stashes/${st.id}/put`,{itemId:extra.id},a.token);assert.equal(full.status,409);assert.match(full.error,/full/);
-  for(let i=0;i<10;i++)await call('POST','/items/admin/grant',{...cookie,name:'B'+i,to:'Kael',adminPassword:'dmpass'});
+  for(let i=0;i<20;i++)await call('POST','/items/admin/grant',{...cookie,name:'B'+i,to:'Kael',adminPassword:'dmpass'});
   const inside=(await call('GET',`/stashes/${st.id}`,undefined,b.token)).stashItems[0];
   assert.equal((await call('POST',`/stashes/${st.id}/take`,{itemId:inside.id},b.token)).status,409);
 });
@@ -115,19 +115,19 @@ test('far away you only see counts per zone; other people\'s stashes open only w
   await call('POST','/stashes',{...spot,name:'Hidden',isPrivate:true},a.token);
   // Kael is nearby (within the list range) but not at the stash
   stand({territory:339,x:50,y:2,z:-30.25});
-  let list=await call('GET','/stashes',undefined,b.token);assert.equal(list.stashes.length,1);assert.equal(list.elsewhere,0);
+  let list=await call('GET','/stashes?full=1',undefined,b.token);assert.equal(list.stashes.length,1);assert.equal(list.elsewhere,0);
   assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,403);
   // Kael is in another zone: no details, only a zone count
   stand({territory:340,x:0,y:0,z:0});
-  list=await call('GET','/stashes',undefined,b.token);assert.equal(list.stashes.length,0);assert.deepEqual(list.zones,[{zone:'Mist',count:1}]);assert.equal(list.elsewhere,1);
+  list=await call('GET','/stashes?full=1',undefined,b.token);assert.equal(list.stashes.length,0);assert.deepEqual(list.zones,[{zone:'Mist',count:1}]);assert.equal(list.elsewhere,1);
   assert.equal(list.stashes.length,0);
   // No position at all behaves like far away
   stand(null);
-  list=await call('GET','/stashes',undefined,b.token);assert.equal(list.stashes.length,0);assert.equal(list.elsewhere,1);
+  list=await call('GET','/stashes?full=1',undefined,b.token);assert.equal(list.stashes.length,0);assert.equal(list.elsewhere,1);
   assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,403);
   assert.equal((await call('POST','/stashes/'+st.id+'/put-gold',{amount:1},b.token)).status,403);
   // The owner is never held back, and sees their own from anywhere
-  list=await call('GET','/stashes',undefined,a.token);assert.equal(list.stashes.length,2);
+  list=await call('GET','/stashes?full=1',undefined,a.token);assert.equal(list.stashes.length,2);
   assert.equal((await call('GET','/stashes/'+st.id,undefined,a.token)).status,200);
   stand(HERE);
   assert.equal((await call('GET','/stashes/'+st.id,undefined,b.token)).status,200);

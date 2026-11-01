@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import { handle } from '../src/api.mjs';
 
-function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql','0018_rooms.sql','0019_mail.sql','0020_mail_look.sql','0021_armory.sql','0022_duels.sql','0023_profiles.sql','0024_profile_name.sql','0025_reports.sql','0026_marks.sql', '0027_settings.sql','0028_alpha_gold.sql','0029_quest_notices.sql','0030_finds.sql', '0031_party_quests.sql', '0032_member_tags.sql','0033_job_board.sql','0034_carried_status.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
+function database(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0001_init.sql','0002_scenes.sql','0003_items.sql','0004_stashes.sql','0005_signs.sql','0006_item_requirements.sql','0007_bank.sql','0008_statuses.sql','0009_recipes.sql','0010_diagnosis.sql','0011_quests.sql','0012_quest_claims.sql','0013_quest_starts.sql','0014_quest_fights.sql','0015_gold_spots.sql','0016_players.sql','0017_status_bonuses.sql','0018_rooms.sql','0019_mail.sql','0020_mail_look.sql','0021_armory.sql','0022_duels.sql','0023_profiles.sql','0024_profile_name.sql','0025_reports.sql','0026_marks.sql', '0027_settings.sql','0028_alpha_gold.sql','0029_quest_notices.sql','0030_finds.sql', '0031_party_quests.sql', '0032_member_tags.sql','0033_job_board.sql','0034_carried_status.sql','0035_zone_index.sql','0036_item_link.sql','0037_iron_pack_tag.sql'])sqlite.exec(fs.readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){const st=sqlite.prepare(sql);let a=[];return {bind(...v){a=v;return this},async first(){return st.get(...a)||null},async all(){return {results:st.all(...a)}},async run(){return {meta:{changes:Number(st.run(...a).changes)}}}}}}}
 const mk=(db,member='fcpass')=>async(method,path,data,token)=>{const r=await handle(new Request('https://kinship.test/api'+path,{method,headers:{...(data===undefined?{}:{'Content-Type':'application/json',Origin:'https://kinship.test'}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)}),db,'dmpass',member);return {status:r.status,...await r.json()}};
 const cookie={name:'Burnt cookie',icon:'game:20001',description:'A charred round disc.',flavor:'Smells like charcoal.',useLabel:'Eat',useText:'All you taste is ash.',consumable:true};
 async function join(call,name){const r=await call('POST','/items/register',{name,memberPassword:'fcpass'});assert.equal(r.status,201);return r}
@@ -34,7 +34,7 @@ test('bad items are refused and inventory holds ten',async t=>{
   const db=database();t.after(()=>db.sqlite.close());const call=mk(db);const a=await join(call,'Mira');
   assert.equal((await call('POST','/items',{...cookie,icon:'http://evil'},a.token)).status,400);
   assert.equal((await call('POST','/items',{...cookie,name:''},a.token)).status,400);
-  for(let i=0;i<10;i++)assert.equal((await call('POST','/items',{...cookie,name:'Item '+i},a.token)).status,201);
+  for(let i=0;i<20;i++)assert.equal((await call('POST','/items',{...cookie,name:'Item '+i},a.token)).status,201);
   const full=await call('POST','/items',cookie,a.token);assert.equal(full.status,409);assert.match(full.error,/full/);
 });
 
@@ -56,12 +56,12 @@ test('giving needs a real member with room, and only the owner can give, edit or
   assert.equal((await call('POST',`/items/${m1.id}/give`,{to:'Nobody'},a.token)).status,404);
   assert.equal((await call('POST',`/items/${m1.id}/give`,{to:'Mira'},a.token)).status,400);
   assert.equal((await call('POST',`/items/${m1.id}/give`,{to:'Kael'},b.token)).status,404);
-  for(let i=0;i<10;i++)await call('POST','/items',{...cookie,name:'K'+i},b.token);
+  for(let i=0;i<20;i++)await call('POST','/items',{...cookie,name:'K'+i},b.token);
   const full=await call('POST',`/items/${m1.id}/give`,{to:'Kael'},a.token);assert.equal(full.status,409);
   assert.equal((await call('GET','/items/me',undefined,a.token)).items.length,1);
   const kItem=(await call('GET','/items/me',undefined,b.token)).items[0];
   assert.equal((await call('POST',`/items/${kItem.id}/delete`,{},a.token)).status,404);
-  assert.equal((await call('POST',`/items/${kItem.id}/delete`,{},b.token)).items.length,9);
+  assert.equal((await call('POST',`/items/${kItem.id}/delete`,{},b.token)).items.length,19);
   assert.deepEqual((await call('GET','/items/members',undefined,a.token)).members,['Kael']);
   const ok=await call('POST',`/items/${m1.id}/give`,{to:'Kael'},a.token);assert.equal(ok.items.length,0);
   const upd=await call('POST',`/items/${m1.id}/update`,cookie,a.token);assert.equal(upd.status,404);
@@ -97,7 +97,7 @@ test('a SM can gift an item straight into a member inventory, and the gift canno
   assert.equal(gift.name,'Burnt cookie');assert.equal(gift.canEdit,false);
   assert.equal((await call('POST',`/items/${gift.id}/use`,{},a.token)).text,'All you taste is ash.');
   const list=await call('POST','/items/admin/list',{adminPassword:'dmpass'});assert.equal(list.items.length,0);
-  for(let i=0;i<10;i++)await call('POST','/items/admin/grant',{...cookie,name:'G'+i,to:'Mira',adminPassword:'dmpass'});
+  for(let i=0;i<20;i++)await call('POST','/items/admin/grant',{...cookie,name:'G'+i,to:'Mira',adminPassword:'dmpass'});
   assert.equal((await call('POST','/items/admin/grant',{...cookie,to:'Mira',adminPassword:'dmpass'})).status,409);
   assert.equal((await call('POST','/items/admin/list',{adminPassword:'dmpass'})).items[0].creator,'(SM gift)');
 });
@@ -135,6 +135,6 @@ test('opening needs room, and deleting a container deletes what is inside',async
   assert.equal(db.sqlite.prepare('SELECT count(*) AS n FROM items WHERE name IN (?,?,?)').get('A','B','C').n,0);
   const c2=await mkItem({name:'Chest2',useText:'Open.',useLabel:'Open'});
   await call('POST',`/items/${c2.id}/seal`,{itemId:(await mkItem({name:'X'})).id},a.token);
-  for(let i=0;i<8;i++)await mkItem({name:'F'+i});
+  for(let i=0;i<18;i++)await mkItem({name:'F'+i});
   const full=await call('POST',`/items/${c2.id}/use`,{},a.token);assert.equal(full.status,409);assert.match(full.error,/room/);
 });
