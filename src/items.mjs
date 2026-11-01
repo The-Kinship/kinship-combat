@@ -42,6 +42,15 @@ export async function grantAlphaGold(db, memberId = null) {
   }
   return granted;
 }
+/** An optional website link on an item: https only, one short address, no spaces. Only SMs may attach one (checked by the routes). */
+export function cleanLink(v) {
+  const raw = v === undefined || v === null ? '' : String(v).trim();
+  if (!raw) return '';
+  if (raw.length > 200 || /\s/.test(raw) || !/^https:\/\//i.test(raw)) fail('A link must start with https:// and be under 200 characters, with no spaces.');
+  let u; try { u = new URL(raw); } catch { fail('That link is not a valid web address.'); }
+  if (!u.hostname.includes('.') || u.username || u.password) fail('That link is not a valid web address.');
+  return u.href;
+}
 export function itemFields(data, allowBonus = false, gearOnly = false) {
   const name = str(data.name, 'Item name', 40), description = str(data.description, 'Description', 300, false), flavor = str(data.flavor, 'Flavor text', 150, false);
   const useText = str(data.useText, 'What happens when used', 400, false);
@@ -70,7 +79,8 @@ export function itemFields(data, allowBonus = false, gearOnly = false) {
   const gearAtk = allowBonus && wearSlot ? bonus(data.gearAtk, 'Gear attack bonus') : 0, gearHeal = allowBonus && wearSlot ? bonus(data.gearHeal, 'Gear heal bonus') : 0;   // only Advocates can give gear a roll bonus
   const icon = str(data.icon, 'Icon', 80);
   if (!ICON.test(icon)) fail('Choose an icon for the item.');
-  return { carried, name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName && !carried ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, wearSlot, lifespanDays, gearAtk, gearHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
+  const link = cleanLink(data.link);
+  return { link, carried, name, icon, description, flavor, useLabel, useText, requires, requiresConsume: data.requiresConsume === true && requires ? 1 : 0, stName, stDesc, stIcon, stDebuff: data.stDebuff === true && stName ? 1 : 0, stMinutes: stName && !carried ? stMinutes : 0, stType: stName ? stType : '', stCure: stName ? stCure : '', stAtk, stHeal, wearSlot, lifespanDays, gearAtk, gearHeal, startsQuest, cures, consumable: data.consumable === true && useText ? 1 : 0 };
 }
 // A reagent can name up to three other items it combines with, and say what they make. Stored as JSON: { with: [names], result: itemFields }.
 function recipeJson(data, allowBonus = false, gearOnly = false) {
@@ -87,14 +97,15 @@ function recipeJson(data, allowBonus = false, gearOnly = false) {
 const asView = f => ({ name: f.name, icon: f.icon, description: f.description, flavor: f.flavor, useLabel: f.useLabel, useText: f.useText, consumable: !!f.consumable, requires: f.requires, requiresConsume: !!f.requiresConsume, stName: f.stName, stDesc: f.stDesc, stIcon: f.stIcon, stDebuff: !!f.stDebuff, stMinutes: f.stMinutes, stType: f.stType, stCure: f.stCure, stAtk: f.stAtk, stHeal: f.stHeal, cures: f.cures });
 export const view = (row, meId) => {
   const mine = row.creator_id === meId && row.owner_id === meId;
-  const v = { id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine, canCombine: !!row.recipe, requires: row.requires || '', requiresConsume: !!row.requires_consume, holds: row.holds || 0 };
+  const v = { link: row.link || '', id: row.id, name: row.name, icon: row.icon, description: row.description, flavor: row.flavor, useLabel: row.use_label, consumable: !!row.consumable, canEdit: mine, canCombine: !!row.recipe, requires: row.requires || '', requiresConsume: !!row.requires_consume, holds: row.holds || 0 };
   if (row.wear_slot) { v.wearSlot = row.wear_slot; v.gearAtk = row.gear_atk || 0; v.gearHeal = row.gear_heal || 0; v.lifespanDays = row.lifespan_days || 0; v.wornAt = row.worn_at || ''; v.breaksAt = row.worn_at && row.lifespan_days ? new Date(Date.parse(row.worn_at) + row.lifespan_days * 86400000).toISOString() : ''; }
   if (mine) { v.carried = !!row.carried; v.useText = row.use_text; v.stName = row.st_name || ''; v.stDesc = row.st_desc || ''; v.stIcon = row.st_icon || ''; v.stDebuff = !!row.st_debuff; v.stMinutes = row.st_minutes || 0; v.stType = row.st_type || ''; v.stCure = row.st_cure || ''; v.stAtk = row.st_atk || 0; v.stHeal = row.st_heal || 0; v.cures = row.cures || ''; if (row.recipe) { const r = JSON.parse(row.recipe); v.combineWith = r.with; v.combineFail = r.failChance || 0; v.result = asView(r.result); } }
   return v;
 };
 // Labels the SMs can put on a registered character. They show at the bottom of that character's roster entry and profile card.
-export const TAGS = ['Harbinger', 'Advocate', 'SM', 'Banker', 'Onyx', 'Vanguard', 'Life Watch', 'Ember', 'Kin', 'Plugin Only', 'Alt'];
+export const TAGS = ['Harbinger', 'Advocate', 'SM', 'Banker', 'Onyx', 'Iron Pack', 'Life Watch', 'Ember', 'Kin', 'Plugin Only', 'Alt'];
 export const tagList = s => TAGS.filter(t => String(s || '').split(',').includes(t));
+export const isStaff = tags => tagList(tags).some(t => ['Harbinger', 'Advocate', 'SM'].includes(t));
 export async function who(db, request) {
   const token = (request.headers.get('authorization') || '').replace(/^Bearer /, '');
   if (!token) fail('Sign in on the RP tab first.', 401);
@@ -116,7 +127,7 @@ const setGear = (db, id, f) => f.wearSlot ? db.prepare('UPDATE items SET wear_sl
 const cleanOrphans = db => db.prepare("DELETE FROM items WHERE length(owner_id) = 17 AND substr(owner_id, 1, 1) = 'i' AND substr(owner_id, 2) NOT IN (SELECT id FROM items)").run();
 // Stacking: every unit is still its own row, but identical units (same maker, same text, same everything) share a slot, STACK to a slot.
 // An item with things inside it never stacks. The first unit of a stack stands for it when the plugin uses, gives or stashes it.
-const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'st_atk', 'st_heal', 'wear_slot', 'gear_atk', 'gear_heal', 'lifespan_days', 'worn_at', 'cures', 'recipe', 'consumable', 'starts_quest', 'carried'];
+const KEYS = ['creator_id', 'name', 'icon', 'description', 'flavor', 'use_label', 'use_text', 'requires', 'requires_consume', 'st_name', 'st_desc', 'st_icon', 'st_debuff', 'st_minutes', 'st_type', 'st_cure', 'st_atk', 'st_heal', 'wear_slot', 'gear_atk', 'gear_heal', 'lifespan_days', 'worn_at', 'cures', 'recipe', 'consumable', 'starts_quest', 'carried', 'link'];
 const keyOf = r => r.holds > 0 ? 'id:' + r.id : JSON.stringify(KEYS.map(k => r[k] ?? ''));
 export function stacks(rows) {
   const groups = new Map(), at = new Map(rows.map((r, i) => [r.id, i]));
@@ -267,6 +278,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
           .bind(made[i], owner, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, f.startsQuest, new Date().toISOString(), f.stAtk, f.stHeal).run();
         await setGear(db, made[i], f);
         if (f.carried) await db.prepare('UPDATE items SET carried = 1 WHERE id = ?').bind(made[i]).run();
+        if (f.link) await db.prepare('UPDATE items SET link = ? WHERE id = ?').bind(f.link, made[i]).run();
       }
       if ((await ownerSlots(db, owner)) > cap) {
         for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
@@ -320,6 +332,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
   if (post && path === '/items') {
     await rate(db, 'items-create:' + me.id, 30);
     const body = await input(request), alpha = await alphaGear(db), f = itemFields(body, alpha, true), recipe = recipeJson(body, alpha, true);
+    if (f.link && !isStaff(me.tags)) fail('Only SMs can add a website link to an item.', 403);
     if ((await db.prepare('SELECT count(*) AS total FROM items').first()).total >= MAX_ITEMS) fail('The RP system is full.', 503);
     const qty = body.quantity === undefined ? 1 : body.quantity;
     if (!Number.isInteger(qty) || qty < 1 || qty > 100) fail('Quantity must be a whole number from 1 to 100.');
@@ -329,7 +342,7 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
       const id = rand(8);
       const r = await db.prepare('INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at, st_atk, st_heal) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?')
         .bind(id, me.id, me.id, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, recipe, f.consumable, new Date().toISOString(), f.stAtk, f.stHeal, me.id, CAPACITY * STACK).run();
-      if (r.meta.changes === 1) { made.push(id); await setGear(db, id, f); if (f.carried) await db.prepare('UPDATE items SET carried = 1 WHERE id = ?').bind(id).run(); } else break;
+      if (r.meta.changes === 1) { made.push(id); await setGear(db, id, f); if (f.carried) await db.prepare('UPDATE items SET carried = 1 WHERE id = ?').bind(id).run(); if (f.link) await db.prepare('UPDATE items SET link = ? WHERE id = ?').bind(f.link, id).run(); } else break;
     }
     if (made.length < qty || (await ownerSlots(db, me.id)) > CAPACITY) {
       for (const x of made) await db.prepare('DELETE FROM items WHERE id = ?').bind(x).run();
@@ -348,9 +361,10 @@ export async function handleItems(request, db, path, { json, input, rate, ip, ch
   if (route === 'update') {
     if (item.creator_id !== me.id) fail('Only the person who made an item can change it.', 403);
     const body = await input(request), alpha = await alphaGear(db), f = itemFields(body, alpha, true), recipe = recipeJson(body, alpha, true);
+    if (f.link && !isStaff(me.tags)) fail('Only SMs can add a website link to an item.', 403);
     for (const unit of await groupIds(db, me.id, id)) {
       await db.prepare('UPDATE items SET name=?, icon=?, description=?, flavor=?, use_label=?, use_text=?, requires=?, requires_consume=?, st_name=?, st_desc=?, st_icon=?, st_debuff=?, st_minutes=?, st_type=?, st_cure=?, st_atk=?, st_heal=?, cures=?, recipe=?, consumable=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.stAtk, f.stHeal, f.cures, recipe, f.consumable, unit, me.id, me.id).run();
-    await db.prepare('UPDATE items SET carried=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.carried, unit, me.id, me.id).run();
+    await db.prepare('UPDATE items SET carried=?, link=? WHERE id=? AND owner_id=? AND creator_id=?').bind(f.carried, f.link, unit, me.id, me.id).run();
     await db.prepare('UPDATE items SET wear_slot=?, gear_atk=?, gear_heal=?, lifespan_days=? WHERE id=? AND owner_id=? AND worn_at IS NULL').bind(f.wearSlot, f.gearAtk, f.gearHeal, f.lifespanDays, unit, me.id).run();   // gear settings can't change once it has been worn
     }
   } else if (route === 'delete') {
