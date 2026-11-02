@@ -48,7 +48,7 @@ test('giving needs a real Advocate-made item, a full bag stops a gift without lo
   await call('POST','/items/admin/grant',{adminPassword:'dmpass',to:'Mira',name:'Silver locket',icon:'game:20001'});
   r=await call('POST','/quests/talk',{npc:'Voss'},a.token);assert.equal(r.results[0].ok,true);
   const items=(await call('GET','/items/me',undefined,a.token)).items;
-  for(let i=items.length;i<10;i++)await call('POST','/items',{name:'Junk'+i,icon:'game:20001'},a.token);
+  for(let i=items.length;i<20;i++)await call('POST','/items',{name:'Junk'+i,icon:'game:20001'},a.token);
   r=await call('POST','/quests/talk',{npc:'Voss'},a.token);assert.equal(r.results[0].ok,false);assert.match(r.results[0].text,/full/);
   assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,1);   // still on the gift step
   const list=await admin('list',{});assert.equal(list.quests[0].players[0].name,'Mira');
@@ -111,9 +111,9 @@ test('a step can need a status, use it up, and give one; a full status list stop
   await admin('assign',{questId:id,to:'Mira'});
   const talk=n=>call('POST','/quests/talk',{npc:n},a.token);
   assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].current.needs,undefined);
-  for(let i=0;i<5;i++)await call('POST','/statuses/self',{name:'S'+i,icon:'game:10205',description:''},a.token);
+  for(let i=0;i<10;i++)await call('POST','/statuses/self',{name:'S'+i,icon:'game:10205',description:''},a.token);
   await call('POST','/statuses/self',{name:'S5',icon:'game:10205',description:''},a.token);                    // now at the limit of six
-  let r=await talk('Priest');assert.equal(r.results[0].ok,false);assert.match(r.results[0].text,/6 statuses/);
+  let r=await talk('Priest');assert.equal(r.results[0].ok,false);assert.match(r.results[0].text,/10 statuses/);
   assert.equal((await call('GET','/quests/mine',undefined,a.token)).quests[0].step,0);
   const mine=(await call('GET','/statuses',undefined,a.token)).statuses.find(s=>s.name==='S5');await call('POST',`/statuses/${mine.id}/remove`,{},a.token);
   r=await talk('Priest');assert.equal(r.results[0].ok,true);assert.equal(r.results[0].statusGained,'Blessed');
@@ -197,7 +197,7 @@ test('a fight at a spot starts by standing there, needs its status, and a full b
   let r=await call('POST','/quests/fight/start',{territory:339},a.token);assert.equal(r.fight,null);assert.equal(r.text,'You have no weapon.\n\nRequires status: Armed');
   await call('POST','/statuses/self',{name:'Armed',icon:'game:10205',description:''},a.token);
   r=await call('POST','/quests/fight/start',{territory:339},a.token);assert.equal(r.fight.status,'active');
-  for(let i=0;i<10;i++)await call('POST','/items',{name:'Junk'+i,icon:'game:20001'},a.token);
+  for(let i=0;i<20;i++)await call('POST','/items',{name:'Junk'+i,icon:'game:20001'},a.token);
   r=await call('POST','/quests/fight/attack',{questId:id},a.token);
   assert.equal(r.fight.status,'blocked');assert.match(r.fight.result.text,/full/);assert.equal(r.fight.npcHp,0);
   const junk=(await call('GET','/items/me',undefined,a.token)).items[0];await call('POST',`/items/${junk.id}/delete`,{},a.token);
@@ -238,4 +238,27 @@ test('an arrive step advances when reported, and area notices pop up without mov
   assert.equal((await call('POST','/quests/act',{type:'arrive',territory:339},a.token)).results.length,0);              // no longer the current step
   assert.match((await call('POST','/quests/notice',{questId:saved.id,index:0,territory:339},a.token)).text,/animal/);   // still pops up on a later step
   const b=await join(call,'Kael');assert.equal((await call('POST','/quests/notice',{questId:saved.id,index:0,territory:339},b.token)).text,'');   // not on the quest
+});
+
+test('a quest can pay gold, an item, or both into the bank and inventory when it is finished',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await join(call,'Mira'),b=await join(call,'Kael');
+  const admin=(p,d)=>call('POST','/quests/admin/'+p,{adminPassword:'dmpass',...d});
+  const two={title:'Pay day',intro:'Work for coin.',reward:{gold:25,gift:{name:'Magic crystal',icon:'game:20001',description:'Hums softly.'}},steps:[{type:'talk',npc:'Foreman',text:'Start.'},{type:'talk',npc:'Foreman',text:'Well done.'}]};
+  const gold={title:'Gold only',intro:'x',reward:{gold:10},steps:[{type:'talk',npc:'Clerk',text:'Done.'}]};
+  const bad={...gold,title:'Bad',reward:{gold:-5}};
+  assert.equal((await admin('save',bad)).status,400);
+  const q1=(await admin('save',two)).id,q2=(await admin('save',gold)).id;
+  const list=(await admin('list',{})).quests;assert.equal(list.find(q=>q.id===q1).reward.gold,25);
+  for(const id of [q1,q2])assert.equal((await admin('assign',{questId:id,to:'Mira'})).status,201);
+  let r=await call('POST','/quests/talk',{npc:'Foreman'},a.token);assert.deepEqual(r.results[0].gained,[]);
+  assert.equal((await call('GET','/bank/me',undefined,a.token)).gold,0);
+  r=await call('POST','/quests/talk',{npc:'Foreman'},a.token);assert.equal(r.results[0].finished,true);assert.deepEqual(r.results[0].gained,['Magic crystal','25 gold']);
+  assert.equal((await call('GET','/bank/me',undefined,a.token)).gold,25);
+  assert.equal(r.items.filter(i=>i.name==='Magic crystal').length,1);
+  r=await call('POST','/quests/talk',{npc:'Clerk'},a.token);assert.deepEqual(r.results[0].gained,['10 gold']);
+  assert.equal((await call('GET','/bank/me',undefined,a.token)).gold,35);
+  r=await call('POST','/quests/talk',{npc:'Foreman'},a.token);assert.equal(r.results.length,0);   // finished quests never pay twice
+  assert.equal((await call('GET','/bank/me',undefined,a.token)).gold,35);
+  assert.equal((await call('GET','/bank/me',undefined,b.token)).gold,0);
 });
