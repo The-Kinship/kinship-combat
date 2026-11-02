@@ -5,6 +5,7 @@ import { fail, authenticate } from './engine.mjs';
 import { roomOf } from './nearby.mjs';
 import { randomInt } from 'node:crypto';
 import { who, rand, str, nameKey, itemFields, inventory, ownerSlots, CAP, STACK } from './items.mjs';
+import { earn, MAX_AMOUNT } from './bank.mjs';
 import { applyStatus, bonus, rollBonuses, checkRoom, findActive, removeByName } from './status-core.mjs';
 
 const ICON = /^(game:\d{1,7}|site:[A-Za-z0-9._-]{1,60})$/;
@@ -92,7 +93,30 @@ function notices(list) {
     return { place: place(n.place, true), text: str(n.text, `Area notice ${i + 1} text`, 600), repeat: n.repeat === true };
   });
 }
-const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps, q.notices, q.board FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? ORDER BY p.updated_at';
+// A quest can pay a reward when its last step is finished: gold into the personal bank, an item, or both.
+function rewardSpec(r) {
+  if (r === undefined || r === null || typeof r !== 'object') return '';
+  const gold = whole(r.gold, 'Reward gold', 0, MAX_AMOUNT, 0);
+  const gift = r.gift && typeof r.gift === 'object' && String(r.gift.name ?? '').trim() ? itemFields(r.gift) : null;
+  return gold || gift ? JSON.stringify({ gold, gift }) : '';
+}
+const rewardOf = r => { try { return r && r.reward ? JSON.parse(r.reward) : null; } catch { return null; } };
+async function giveReward(db, memberId, reward, title) {
+  const out = { ok: true, gained: [], ids: [] };
+  if (!reward) return out;
+  if (reward.gift) {
+    const id = await insertGift(db, memberId, reward.gift);
+    if (!id) return { ok: false, why: 'Your inventory is full. Make room for the quest reward, then try again.', gained: [], ids: [] };
+    out.ids.push(id); out.gained.push(reward.gift.name);
+  }
+  if (reward.gold) {
+    if (!(await earn(db, memberId, reward.gold, `Quest reward: ${title}`))) { await dropItems(db, out.ids); return { ok: false, why: 'Your purse cannot hold that much gold.', gained: [], ids: [] }; }
+    out.gained.push(`${reward.gold} gold`);
+  }
+  return out;
+}
+const dropItems = async (db, ids) => { for (const id of ids) if (id) await db.prepare('DELETE FROM items WHERE id = ?').bind(id).run(); };
+const SELECT_P = 'SELECT p.quest_id, p.step, p.done, q.title, q.intro, q.steps, q.notices, q.board, q.reward FROM quest_progress p JOIN quests q ON q.id = p.quest_id WHERE p.member_id = ? ORDER BY p.updated_at';
 function mineView(r) {
   const list = JSON.parse(r.steps), cur = r.done ? null : list[r.step];
   return { questId: r.quest_id, title: r.title, intro: r.intro, board: r.board || '', step: r.step, total: list.length, done: r.done === 1, failed: r.done === 2,
@@ -111,7 +135,7 @@ async function insertGift(db, ownerId, f) {
     .bind(id, ownerId, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), ownerId, CAP * STACK).run();
   if (r.meta.changes !== 1) return false;
   if ((await ownerSlots(db, ownerId)) > CAP) { await db.prepare('DELETE FROM items WHERE id = ?').bind(id).run(); return false; }
-  return true;
+  return id;
 }
 
 // Group quests: a player who is in a party (a scene they have linked their character to) takes their party mates along. When one
@@ -131,6 +155,11 @@ async function advanceMate(db, by, mateId, r, list, st) {
   if (st.gift) {
     if (!(await insertGift(db, mate.id, st.gift))) { await db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, mate.id, r.quest_id).run(); return; }   // no room: they stay where they are
     gained.push(st.gift.name);
+  }
+  if (last && rewardOf(r)) {
+    const rw = await giveReward(db, mate.id, rewardOf(r), r.title);
+    if (!rw.ok) { await db.prepare('UPDATE quest_progress SET step = ?, done = 0 WHERE member_id = ? AND quest_id = ?').bind(r.step, mate.id, r.quest_id).run(); return; }
+    gained.push(...rw.gained);
   }
   let statusGained = '';
   if (st.grants) { await applyStatus(db, mate.id, { ...st.grants, sourceId: 'dm' }); statusGained = st.grants.name; }
@@ -188,9 +217,16 @@ async function runStep(db, me, r, list, st) {
     const gone = await db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ?').bind(held.id, me.id).run();
     if (gone.meta.changes !== 1) { await undo(); return stop('That item is no longer with you.'); }
   }
+  let giftId = null;
   if (st.gift) {
-    if (!(await insertGift(db, me.id, st.gift))) { await undo(); return stop('Your inventory is full. Make room, then try again.'); }
+    giftId = await insertGift(db, me.id, st.gift);
+    if (!giftId) { await undo(); return stop('Your inventory is full. Make room, then try again.'); }
     gained = [st.gift.name];
+  }
+  if (last && rewardOf(r)) {
+    const rw = await giveReward(db, me.id, rewardOf(r), r.title);
+    if (!rw.ok) { await dropItems(db, [giftId]); await undo(); return stop(rw.why); }
+    gained.push(...rw.gained);
   }
   if (st.needs && st.takesNeeded) await removeByName(db, me.id, st.needs);
   let statusGained = '';
@@ -208,18 +244,18 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       const { results } = await db.prepare('SELECT q.*, m.name AS taken_name FROM quests q LEFT JOIN members m ON m.id = q.board_taken_by ORDER BY q.created_at, q.rowid').all();
       const prog = (await db.prepare('SELECT p.quest_id, p.step, p.done, m.name FROM quest_progress p JOIN members m ON m.id = p.member_id ORDER BY m.name_key').all()).results;
       const claims = (await db.prepare('SELECT c.quest_id, c.step, m.name FROM quest_claims c LEFT JOIN members m ON m.id = c.member_id').all()).results;
-      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text, notices: JSON.parse(q.notices || '[]'), board: q.board, boardMode: q.board_mode, takenBy: q.taken_name || '',
+      return json({ quests: results.map(q => ({ id: q.id, title: q.title, intro: q.intro, steps: JSON.parse(q.steps), startPlace: q.start_place ? JSON.parse(q.start_place) : null, startText: q.start_text, notices: JSON.parse(q.notices || '[]'), reward: q.reward ? JSON.parse(q.reward) : null, board: q.board, boardMode: q.board_mode, takenBy: q.taken_name || '',
         players: prog.filter(p => p.quest_id === q.id).map(p => ({ name: p.name, step: p.step, done: p.done === 1, failed: p.done === 2 })),
         claims: claims.filter(c => c.quest_id === q.id).map(c => ({ step: c.step, name: c.name || '(removed)' })) })) });
     }
     if (path === '/quests/admin/save') {
-      const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps), areas = JSON.stringify(notices(d.notices));
+      const title = str(d.title, 'Quest title', 60), intro = str(d.intro, 'Quest introduction', 400, false), list = steps(d.steps), reward = rewardSpec(d.reward), areas = JSON.stringify(notices(d.notices));
       if (level === 'scene') for (const s of list) if (s.grants) { s.grants.atk = 0; s.grants.heal = 0; }   // roll bonuses on a status are for Advocates (creation password) only
       const board = d.board === undefined ? null : (d.board === 'main' ? 'main' : ''), boardMode = d.boardMode === 'first' ? 'first' : (d.boardMode === 'all' ? 'all' : null);
       const startPlace = d.startPlace ? JSON.stringify(place(d.startPlace)) : '', startText = d.startPlace ? str(d.startText, 'Text at the starting spot', 600) : '';
       if (d.questId) {
         const id = str(d.questId, 'Quest', 20);
-        const r = await db.prepare("UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=?, notices=?, board=COALESCE(?, board), board_mode=COALESCE(?, board_mode) WHERE id=?").bind(title, intro, JSON.stringify(list), startPlace, startText, areas, board, boardMode, id).run();
+        const r = await db.prepare("UPDATE quests SET title=?, intro=?, steps=?, start_place=?, start_text=?, notices=?, board=COALESCE(?, board), board_mode=COALESCE(?, board_mode), reward=? WHERE id=?").bind(title, intro, JSON.stringify(list), startPlace, startText, areas, board, boardMode, reward, id).run();
         await db.prepare("UPDATE quests SET board_taken_by = '' WHERE id = ? AND board_mode != 'first'").bind(id).run();   // only first-come jobs remember who has them
         if (r.meta.changes !== 1) fail('That quest no longer exists.', 404);
         // A shorter quest finishes anyone who was past the new end.
@@ -228,7 +264,7 @@ export async function handleQuests(request, db, path, { json, input, rate, ip, c
       }
       if ((await db.prepare('SELECT count(*) AS total FROM quests').first()).total >= MAX_QUESTS) fail('There are too many quests. Delete one first.', 409);
       const id = rand(6);
-      await db.prepare('INSERT INTO quests (id, title, intro, steps, start_place, start_text, notices, created_at, board, board_mode) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), startPlace, startText, areas, new Date().toISOString(), board ?? '', boardMode ?? 'all').run();
+      await db.prepare('INSERT INTO quests (id, title, intro, steps, start_place, start_text, notices, created_at, board, board_mode, reward) VALUES (?,?,?,?,?,?,?,?,?,?,?)').bind(id, title, intro, JSON.stringify(list), startPlace, startText, areas, new Date().toISOString(), board ?? '', boardMode ?? 'all', reward).run();
       return json({ saved: true, id }, 201);
     }
     if (path === '/quests/admin/delete') {
