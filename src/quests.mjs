@@ -18,7 +18,7 @@ function grant(g, at) {
   return { name: str(g.name, `${at} status name`, 30), description: str(g.description, `${at} status description`, 200, false), icon, minutes, isDebuff: g.isDebuff === true, atk: bonus(g.atk, 'Attack bonus'), heal: bonus(g.heal, 'Heal bonus') };
 }
 
-const MAX_QUESTS = 60, MAX_STEPS = 12, MAX_ACTIVE = 15;
+const MAX_QUESTS = 60, MAX_STEPS = 50, MAX_ACTIVE = 15;
 const TYPES = ['talk', 'give', 'receive', 'look', 'listen', 'search', 'arrive', 'fight'];   // arrive: the plugin reports it when you walk into the spot's radius
 const whole = (v, name, lo, hi, dflt) => { if (v === undefined || v === null) return dflt; if (!Number.isInteger(v) || v < lo || v > hi) fail(`${name} must be a whole number from ${lo} to ${hi}.`); return v; };
 function fightSpec(f) {
