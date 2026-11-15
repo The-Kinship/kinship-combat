@@ -10,7 +10,8 @@ export const INBOX = 30, SLOTS = 3, DAYS = 30;
 const DAY = 86400000;
 const iso = ms => new Date(ms).toISOString();
 
-const fromName = (r, meId, admin) => admin ? (r.from_name || '(removed)')
+export const ANNOUNCE = 'announce';
+const fromName = (r, meId, admin) => r.from_id === ANNOUNCE ? 'The Kinship' : admin ? (r.from_name || '(removed)')
   : r.returned ? 'Returned mail' : r.anonymous && r.from_id !== meId ? 'Anonymous' : (r.from_name || '(removed)');
 async function attached(db, id) { return ownerRows(db, 'm' + id); }
 const SELECT = 'SELECT m.*, f.name AS from_name, t.name AS to_name FROM mails m LEFT JOIN members f ON f.id = m.from_id LEFT JOIN members t ON t.id = m.to_id';
@@ -63,6 +64,21 @@ export async function handleMail(request, db, path, { json, input, rate, ip, che
     await db.prepare('DELETE FROM items WHERE owner_id = ?').bind('m' + r.id).run();
     await db.prepare('DELETE FROM mails WHERE id = ?').bind(r.id).run();
     return json({ deleted: true });
+  }
+
+  // An announcement: one text mail to every member (or every member with a tag). Members with a full mailbox are skipped. No gold or items.
+  if (post && path === '/mail/admin/broadcast') {
+    await rate(db, 'mail-broadcast:' + ip, 5);
+    const d = await input(request); checkCreate(d.adminPassword);
+    const subject = str(d.subject, 'Subject', 60), body = str(d.body, 'Message', 1500);
+    const tag = str(d.tag, 'Tag', 20, false);
+    const now = Date.now();
+    const filter = tag ? " AND (',' || m.tags || ',') LIKE ?" : '';
+    const args = [ANNOUNCE, subject, body, iso(now), iso(now + DAY * DAYS)];
+    if (tag) args.push('%,' + tag + ',%');
+    const r = await db.prepare(`INSERT INTO mails (id, from_id, to_id, subject, body, anonymous, gold, returned, sent_at, expires_at, look) SELECT lower(hex(randomblob(6))), ?, m.id, ?, ?, 0, 0, 0, ?, ?, '' FROM members m WHERE (SELECT count(*) FROM mails x WHERE x.to_id = m.id) < ${INBOX}${filter}`).bind(...args).run();
+    const total = (await db.prepare(`SELECT count(*) AS n FROM members m WHERE 1 = 1${filter}`).bind(...(tag ? ['%,' + tag + ',%'] : [])).first()).n;
+    return json({ delivered: r.meta.changes, notDelivered: Math.max(0, total - r.meta.changes) }, 201);
   }
 
   const me = await who(db, request);
