@@ -85,3 +85,20 @@ test('Advocates see who sent anonymous mail, and removing a member clears their 
   assert.equal((await call('POST','/items/admin/remove-member',{adminPassword:'dmpass',name:'Kael'})).status,200);
   assert.equal((await call('POST','/mail/admin/list',{adminPassword:'dmpass'})).mails.length,0);
 });
+
+test('an SM can mail every member, or every member with a tag; full mailboxes are skipped',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const a=await join(call,'Mira'),b=await join(call,'Kael'),c=await join(call,'Rune');
+  db.sqlite.exec("UPDATE members SET tags = 'Onyx,Iron Pack' WHERE name = 'Kael'");
+  const bc=d=>call('POST','/mail/admin/broadcast',{adminPassword:'dmpass',...d});
+  assert.equal((await call('POST','/mail/admin/broadcast',{adminPassword:'nope',subject:'x',body:'y'})).status,403);
+  assert.equal((await bc({subject:'',body:'y'})).status,400);
+  let r=await bc({subject:'Meeting tonight',body:'Doors open at 8.'});assert.equal(r.status,201);assert.equal(r.delivered,3);assert.equal(r.notDelivered,0);
+  const box=(await call('GET','/mail',undefined,b)).inbox;
+  assert.equal(box.length,1);assert.equal(box[0].from,'The Kinship');assert.equal(box[0].subject,'Meeting tonight');
+  r=await bc({subject:'Pack only',body:'Patrol.',tag:'Iron Pack'});assert.equal(r.delivered,1);
+  assert.equal((await call('GET','/mail',undefined,b)).inbox.length,2);assert.equal((await call('GET','/mail',undefined,c)).inbox.length,1);
+  db.sqlite.exec("DELETE FROM mails WHERE to_id = (SELECT id FROM members WHERE name='Rune')");
+  for(let i=0;i<30;i++)db.sqlite.exec(`INSERT INTO mails (id,from_id,to_id,subject,body,anonymous,gold,returned,sent_at,expires_at,look) SELECT 'ab${String(i).padStart(10,'0')}','x',id,'f','f',0,0,0,'2026-01-01','2099-01-01','' FROM members WHERE name='Rune'`);
+  r=await bc({subject:'Again',body:'Hi'});assert.equal(r.delivered,2);assert.equal(r.notDelivered,1);
+});
