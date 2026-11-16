@@ -147,3 +147,33 @@ test('the lounge: close the night and start a new one are separate steps',async 
   assert.equal((await L(bar,'POST','/sell',{menuId:id})).lounge.tonight,undefined);
   assert.equal((await L(boss,'GET','')).lounge.tonight.count,1);
 });
+
+test('the lounge: staff positions and call buttons',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const boss=await join(call,'Mira'),a=await join(call,'Kael'),sec=await join(call,'Rune'),sec2=await join(call,'Tess');
+  db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Mira'");
+  const L=async(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  assert.equal((await L(a,'POST','/roles/set',{name:'Rune',roles:['Security']})).status,403);
+  assert.equal((await L(boss,'POST','/roles/set',{name:'Rune',roles:['Wizard']})).status,400);
+  await L(boss,'POST','/roles/set',{name:'Rune',roles:['Security','Bartender']});await L(boss,'POST','/roles/set',{name:'Tess',roles:['Security']});await L(boss,'POST','/roles/set',{name:'Mira',roles:['Manager']});
+  assert.deepEqual((await L(a,'GET','')).lounge.roles.find(r=>r.name==='Rune').roles,['Security','Bartender']);
+  assert.equal((await L(a,'POST','/call/security',{})).status,409);                         // not clocked in
+  await L(a,'POST','/clock',{in:true});
+  let r=await L(a,'POST','/call/security',{});assert.equal(r.status,409);assert.match(r.error,/Security/);   // nobody on shift
+  await L(sec,'POST','/clock',{in:true});await L(sec2,'POST','/clock',{in:true});
+  assert.equal((await L(a,'POST','/call/manager',{ic:'IC'})).status,409);                   // no manager on shift
+  await L(boss,'POST','/clock',{in:true});
+  assert.equal((await L(a,'POST','/call/manager',{})).status,400);
+  r=await L(a,'POST','/call/manager',{ic:'OOC'});assert.equal(r.status,200);
+  assert.equal((await L(a,'POST','/call/manager',{ic:'OOC'})).status,429);                  // no spamming
+  assert.deepEqual((await L(boss,'GET','')).lounge.pings.map(p=>p.text),['Kael requests a manager (OOC)']);
+  assert.equal((await L(sec,'GET','')).lounge.pings.length,0);
+  assert.equal((await L(a,'POST','/call/security',{})).status,200);
+  for(const tk of [sec,sec2])assert.deepEqual((await L(tk,'GET','')).lounge.pings.map(p=>p.text),['Kael requests security']);
+  r=await L(a,'POST','/call/ban',{patron:'Ada Vale',reason:'Griefing'});assert.equal(r.status,200);
+  const pings=(await L(boss,'GET','')).lounge.pings;assert.equal(pings[1].text,'Kael has requested Ada Vale be banned. Reason: Griefing');
+  r=await L(sec,'POST','/call/respond',{id:(await L(sec,'GET','')).lounge.pings[0].id});assert.equal(r.lounge.pings.length,0);
+  assert.equal((await L(sec2,'GET','')).lounge.pings[0].responder,'Rune');                  // others see who is going
+  await L(sec2,'POST','/call/dismiss',{id:(await L(sec2,'GET','')).lounge.pings[0].id});assert.equal((await L(sec2,'GET','')).lounge.pings.length,0);
+  assert.equal((await L(a,'GET','')).lounge.working.find(w=>w.name==='Rune').roles[0],'Security');
+});

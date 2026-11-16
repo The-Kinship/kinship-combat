@@ -6,7 +6,8 @@ import { who, rand, str, nameKey, itemFields, isStaff } from './items.mjs';
 import { earn, MAX_AMOUNT } from './bank.mjs';
 import { insertGift } from './quests.mjs';
 
-const PRESENT_MS = 60000, MANUAL_MS = 3 * 3600000, RETURN_MS = 5 * 60000;
+const PING_MS = 30 * 60000, PRESENT_MS = 60000, MANUAL_MS = 3 * 3600000, RETURN_MS = 5 * 60000;
+export const ROLES = ['Manager', 'Security', 'Bartender', 'Server', 'Host', 'Entertainer', 'Cook', 'Other'];
 export const MAX_SERVICES = 10, MAX_MENU = 60, MAX_SHIFT_MIN = 720, KEEP_DAYS = 90, MAX_QTY = 20;
 const iso = ms => new Date(ms).toISOString();
 const whole = (v, name, lo, hi, dflt) => { if (v === undefined || v === null) return dflt; if (!Number.isInteger(v) || v < lo || v > hi) fail(`${name} must be a whole number from ${lo.toLocaleString('en-US')} to ${hi.toLocaleString('en-US')}.`); return v; };
@@ -50,6 +51,11 @@ async function view(db, me, msg = '', extra = {}) {
     me: { since: open ? open.start_at : '', unpaidMinutes: unpaid.reduce((n, s) => n + s.minutes, 0), unpaidGold: unpaid.reduce((n, s) => n + shiftGold(s), 0), soldCount: mine.count, soldTotal: mine.total },
   };
   const now = Date.now();
+  const roleRows = (await db.prepare('SELECT m.name, r.role FROM lounge_roles r JOIN members m ON m.id = r.member_id ORDER BY m.name LIMIT 400').all()).results;
+  out.roles = [...new Set(roleRows.map(r => r.name))].map(name => ({ name, roles: ROLES.filter(x => roleRows.some(r => r.name === name && r.role === x)) }));
+  out.working = out.working.map(w => ({ ...w, roles: out.roles.find(r => r.name === w.name)?.roles ?? [] }));
+  out.pings = (await db.prepare('SELECT p.id, p.kind, p.text, p.created_at, p.responder FROM lounge_ping_targets t JOIN lounge_pings p ON p.id = t.ping_id WHERE t.member_id = ? AND t.done = 0 AND p.created_at >= ? ORDER BY p.created_at LIMIT 5').bind(me.id, iso(now - PING_MS)).all()).results
+    .map(r => ({ id: r.id, kind: r.kind, text: r.text, at: r.created_at, responder: r.responder || '' }));
   out.adText = await kv(db, 'ad_text');
   const venue = await kv(db, 'venue');
   out.venue = venue ? JSON.parse(venue) : null;
@@ -234,6 +240,47 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     else await db.prepare('UPDATE lounge_patrons SET helper_id = NULL, helper_name = NULL WHERE name_key = ?').bind(key).run();
     return json({ lounge: await view(db, me, path.endsWith('/done') ? 'Marked as helped.' : 'Released. They are waiting for help again.') });
   }
+  const sendPing = async (kind, text, role) => {
+    const last = await db.prepare('SELECT created_at FROM lounge_pings WHERE from_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1').bind(me.id, kind).first();
+    if (last && Date.now() - Date.parse(last.created_at) < 20000) fail('You just sent one of those. Give it a few seconds.', 429);
+    const onShift = (await db.prepare('SELECT DISTINCT m.id, m.name, m.tags FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.end_at IS NULL').all()).results.filter(r => r.id !== me.id);
+    const ids = new Set((await db.prepare('SELECT member_id FROM lounge_roles WHERE role = ?').bind(role).all()).results.map(r => r.member_id));
+    let targets = onShift.filter(r => ids.has(r.id));
+    if (!targets.length && role === 'Manager') targets = onShift.filter(r => isManager(r));
+    if (!targets.length) return null;
+    const id = rand(6);
+    await db.prepare('INSERT INTO lounge_pings (id, kind, from_id, from_name, text, created_at) VALUES (?,?,?,?,?,?)').bind(id, kind, me.id, me.name, text, iso(Date.now())).run();
+    for (const t of targets) await db.prepare('INSERT INTO lounge_ping_targets (ping_id, member_id) VALUES (?,?)').bind(id, t.id).run();
+    const old = iso(Date.now() - 86400000);
+    await db.prepare('DELETE FROM lounge_ping_targets WHERE ping_id IN (SELECT id FROM lounge_pings WHERE created_at < ?)').bind(old).run();
+    await db.prepare('DELETE FROM lounge_pings WHERE created_at < ?').bind(old).run();
+    return targets.map(t => t.name);
+  };
+  if (path === '/lounge/call/manager' || path === '/lounge/call/security' || path === '/lounge/call/ban') {
+    await clockedIn();
+    let kind, text, role;
+    if (path.endsWith('/manager')) {
+      if (d.ic !== 'IC' && d.ic !== 'OOC') fail('Choose IC or OOC.');
+      kind = 'manager'; role = 'Manager'; text = `${me.name} requests a manager (${d.ic})`;
+    } else if (path.endsWith('/security')) { kind = 'security'; role = 'Security'; text = `${me.name} requests security`; }
+    else {
+      const patron = str(d.patron, 'The customer', 40), reason = str(d.reason, 'The reason', 200, false);
+      kind = 'ban'; role = 'Manager'; text = `${me.name} has requested ${patron} be banned. Reason: ${reason || 'none given'}`;
+    }
+    const sent = await sendPing(kind, text, role);
+    if (!sent) fail(kind === 'security' ? 'Nobody on shift has the Security position right now.' : 'No manager is on shift right now.', 409);
+    return json({ lounge: await view(db, me, `Sent to ${sent.join(', ')}.`) });
+  }
+  if (path === '/lounge/call/respond') {
+    const id = str(d.id, 'Call', 20);
+    await db.prepare('UPDATE lounge_pings SET responder = ? WHERE id = ? AND responder IS NULL AND id IN (SELECT ping_id FROM lounge_ping_targets WHERE member_id = ?)').bind(me.name, id, me.id).run();
+    await db.prepare('UPDATE lounge_ping_targets SET done = 1 WHERE ping_id = ? AND member_id = ?').bind(id, me.id).run();
+    return json({ lounge: await view(db, me, 'Thank you, they know you are on the way.') });
+  }
+  if (path === '/lounge/call/dismiss') {
+    await db.prepare('UPDATE lounge_ping_targets SET done = 1 WHERE ping_id = ? AND member_id = ?').bind(str(d.id, 'Call', 20), me.id).run();
+    return json({ lounge: await view(db, me) });
+  }
   if (path === '/lounge/schedule/rsvp') {
     const n = await db.prepare('SELECT id FROM lounge_schedule WHERE id = ?').bind(str(d.nightId, 'Night', 20)).first();
     if (!n) fail('That night is no longer on the schedule.', 404);
@@ -243,6 +290,13 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
   }
 
   needManager();
+  if (path === '/lounge/roles/set') {
+    const m = await memberByName(db, d.name);
+    if (!Array.isArray(d.roles) || d.roles.some(r => !ROLES.includes(r))) fail('Unknown position.');
+    await db.prepare('DELETE FROM lounge_roles WHERE member_id = ?').bind(m.id).run();
+    for (const r of new Set(d.roles)) await db.prepare('INSERT INTO lounge_roles (member_id, role) VALUES (?,?)').bind(m.id, r).run();
+    return json({ lounge: await view(db, me, `Positions saved for ${m.name}.`) });
+  }
   if (path === '/lounge/venue/set') {
     const num = (v, k) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > 100000) fail(`${k} is not a valid position.`); return Math.round(v * 100) / 100; };
     const v = { room: str(d.room, 'Room', 60), x: num(d.x, 'x'), y: num(d.y, 'y'), z: num(d.z, 'z'), radius: whole(d.radius, 'Radius', 5, 300, 40), label: str(d.label, 'Label', 60, false) };
