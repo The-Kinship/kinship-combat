@@ -8,7 +8,7 @@ import { findMember } from './lookup.mjs';
 
 export const KEEP_TABLES = ['members', 'players', 'profiles', 'marks', 'bans', 'settings', 'lounge_menu', 'lounge_kv', 'lounge_nights'];
 export const OPTIONAL_TABLES = ['quests'];
-export const WIPE_TABLES = ['items', 'stashes', 'signs', 'gold_log', 'statuses', 'quest_progress', 'quest_claims', 'quest_fights', 'quest_drops', 'party_links', 'quest_shared', 'mails', 'finds', 'worn', 'gear_notices', 'duels', 'reports', 'rooms', 'scenes', 'lounge_shifts', 'lounge_sales', 'rate_limits'];
+export const WIPE_TABLES = ['items', 'stashes', 'signs', 'gold_log', 'statuses', 'quest_progress', 'quest_claims', 'quest_fights', 'quest_drops', 'party_links', 'quest_shared', 'mails', 'finds', 'worn', 'gear_notices', 'duels', 'reports', 'rooms', 'scenes', 'lounge_shifts', 'lounge_sales', 'lounge_services', 'lounge_sessions', 'rate_limits'];
 export const CONFIRM = 'WIPE EVERYTHING';
 export const CONFIRM_ALL = 'WIPE ALL CHARACTERS';   // needed instead when nobody is kept
 

@@ -6,7 +6,7 @@ import { who, rand, str, nameKey, itemFields, isStaff } from './items.mjs';
 import { earn, MAX_AMOUNT } from './bank.mjs';
 import { insertGift } from './quests.mjs';
 
-export const MAX_MENU = 60, MAX_SHIFT_MIN = 720, KEEP_DAYS = 90, MAX_QTY = 20;
+export const MAX_SERVICES = 10, MAX_MENU = 60, MAX_SHIFT_MIN = 720, KEEP_DAYS = 90, MAX_QTY = 20;
 const iso = ms => new Date(ms).toISOString();
 const whole = (v, name, lo, hi, dflt) => { if (v === undefined || v === null) return dflt; if (!Number.isInteger(v) || v < lo || v > hi) fail(`${name} must be a whole number from ${lo.toLocaleString('en-US')} to ${hi.toLocaleString('en-US')}.`); return v; };
 const isManager = me => isStaff(me.tags) || String(me.tags || '').split(',').map(t => t.trim()).includes('Lounge Manager');
@@ -20,14 +20,17 @@ const shiftGold = s => Math.floor(s.minutes * s.rate / 60);
 async function tonight(db, nightStart) {
   const sold = (await db.prepare('SELECT s.name, s.price, m.name AS who, sum(s.qty) AS count FROM lounge_sales s JOIN members m ON m.id = s.member_id WHERE s.at >= ? GROUP BY s.name, s.price, m.name').bind(nightStart).all()).results;
   const shifts = (await db.prepare('SELECT m.name, s.minutes, s.end_at FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.start_at >= ? OR s.end_at IS NULL').bind(nightStart).all()).results;
-  const people = [...new Set([...shifts.map(r => r.name), ...sold.map(r => r.who)])].sort((x, y) => x.localeCompare(y));
+  const services = (await db.prepare('SELECT m.name AS who, s.name, s.customer, s.rate, s.minutes, s.total FROM lounge_sessions s JOIN members m ON m.id = s.member_id WHERE s.closed_at >= ? ORDER BY s.closed_at').bind(nightStart).all()).results;
+  const serviceTotal = services.reduce((n, x) => n + x.total, 0);
+  const people = [...new Set([...shifts.map(r => r.name), ...sold.map(r => r.who), ...services.map(r => r.who)])].sort((x, y) => x.localeCompare(y));
   const items = (await db.prepare('SELECT name, price, sum(qty) AS count FROM lounge_sales WHERE at >= ? GROUP BY name, price ORDER BY name').bind(nightStart).all()).results.map(r => ({
     name: r.name, price: r.price, count: r.count, total: r.count * r.price,
     by: people.map(who => ({ name: who, count: sold.find(x => x.name === r.name && x.price === r.price && x.who === who)?.count ?? 0 })),
   }));
   return {
     items, count: items.reduce((n, i) => n + i.count, 0), total: items.reduce((n, i) => n + i.total, 0),
-    people: people.map(name => ({ name, count: sold.filter(x => x.who === name).reduce((n, x) => n + x.count, 0), total: sold.filter(x => x.who === name).reduce((n, x) => n + x.count * x.price, 0), minutes: shifts.filter(x => x.name === name).reduce((n, x) => n + x.minutes, 0) })),
+    services, serviceTotal, grand: items.reduce((n, i) => n + i.total, 0) + serviceTotal,
+    people: people.map(name => ({ name, count: sold.filter(x => x.who === name).reduce((n, x) => n + x.count, 0), total: sold.filter(x => x.who === name).reduce((n, x) => n + x.count * x.price, 0), minutes: shifts.filter(x => x.name === name).reduce((n, x) => n + x.minutes, 0), serviceTotal: services.filter(x => x.who === name).reduce((n, x) => n + x.total, 0) })),
   };
 }
 
@@ -39,7 +42,10 @@ async function view(db, me, msg = '', extra = {}) {
   const unpaid = (await db.prepare('SELECT minutes, rate FROM lounge_shifts WHERE member_id = ? AND paid = 0 AND end_at IS NOT NULL').bind(me.id).all()).results;
   const mine = await db.prepare('SELECT coalesce(sum(qty), 0) AS count, coalesce(sum(qty * price), 0) AS total FROM lounge_sales WHERE member_id = ? AND at >= ?').bind(me.id, nightStart).first();
   const out = {
-    ...extra, msg, canManage: manager, pf: { text: await kv(db, 'pf_text'), minutes: Number(await kv(db, 'pf_minutes', '55')), postedAt: await kv(db, 'pf_posted_at'), postedBy: await kv(db, 'pf_posted_by') }, hours: await kv(db, 'hours'), rate: Number(await kv(db, 'rate', '0')), nightStart, menu, working,
+    ...extra, msg, canManage: manager,
+    services: (await db.prepare('SELECT s.id, s.name, s.price, m.name AS who FROM lounge_services s JOIN members m ON m.id = s.member_id ORDER BY m.name, s.name LIMIT 300').all()).results,
+    session: await mySession(db, me.id),
+    sessions: (await db.prepare('SELECT m.name AS who, s.name, s.customer, s.ends_at FROM lounge_sessions s JOIN members m ON m.id = s.member_id WHERE s.closed_at IS NULL ORDER BY s.ends_at LIMIT 50').all()).results.map(r => ({ who: r.who, name: r.name, customer: r.customer, endsAt: r.ends_at })), pf: { text: await kv(db, 'pf_text'), minutes: Number(await kv(db, 'pf_minutes', '55')), postedAt: await kv(db, 'pf_posted_at'), postedBy: await kv(db, 'pf_posted_by') }, hours: await kv(db, 'hours'), rate: Number(await kv(db, 'rate', '0')), nightStart, menu, working,
     me: { since: open ? open.start_at : '', unpaidMinutes: unpaid.reduce((n, s) => n + s.minutes, 0), unpaidGold: unpaid.reduce((n, s) => n + shiftGold(s), 0), soldCount: mine.count, soldTotal: mine.total },
   };
   if (manager) {
@@ -55,6 +61,20 @@ async function view(db, me, msg = '', extra = {}) {
     out.staff = [...staff.values()];
   }
   return out;
+}
+
+const sessionOf = r => ({ id: r.id, name: r.name, customer: r.customer, rate: r.rate, minutes: r.minutes, startedAt: r.started_at, endsAt: r.ends_at });
+async function mySession(db, memberId) {
+  const r = await db.prepare('SELECT * FROM lounge_sessions WHERE member_id = ? AND closed_at IS NULL').bind(memberId).first();
+  return r ? sessionOf(r) : null;
+}
+// Closes a member's running service session and returns its receipt. The price is the hourly rate times the minutes booked.
+async function closeSession(db, memberId, staffName) {
+  const r = await db.prepare('SELECT * FROM lounge_sessions WHERE member_id = ? AND closed_at IS NULL').bind(memberId).first();
+  if (!r) return null;
+  const total = Math.round(r.rate * r.minutes / 60), closedAt = iso(Date.now());
+  await db.prepare('UPDATE lounge_sessions SET closed_at = ?, total = ? WHERE id = ?').bind(closedAt, total, r.id).run();
+  return { staff: staffName, service: r.name, customer: r.customer, rate: r.rate, minutes: r.minutes, total, closedAt };
 }
 
 async function endShift(db, memberId, by) {
@@ -85,6 +105,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
       catch { fail('You are already clocked in.', 409); }
       return json({ lounge: await view(db, me, 'Clocked in.') }, 201);
     }
+    if (await mySession(db, me.id)) fail('Close your service session first, then clock out.', 409);
     if (!(await endShift(db, me.id, me.name))) fail('You are not clocked in.', 409);
     return json({ lounge: await view(db, me, 'Clocked out.') });
   }
@@ -112,6 +133,42 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     if (!last) fail('You have no sale from the last 15 minutes to take back.', 404);
     await db.prepare('DELETE FROM lounge_sales WHERE id = ?').bind(last.id).run();
     return json({ lounge: await view(db, me, `Took back ${last.qty} ${last.name}.`) });
+  }
+
+  if (path === '/lounge/service/save') {
+    const name = str(d.name, 'Service name', 40), price = whole(d.price, 'The price per hour', 0, MAX_AMOUNT, 0);
+    if (d.id) {
+      const r = await db.prepare('UPDATE lounge_services SET name = ?, price = ? WHERE id = ? AND member_id = ?').bind(name, price, str(d.id, 'Service', 20), me.id).run();
+      if (r.meta.changes !== 1) fail('That service was not found.', 404);
+    } else {
+      if ((await db.prepare('SELECT count(*) AS n FROM lounge_services WHERE member_id = ?').bind(me.id).first()).n >= MAX_SERVICES) fail(`You can offer up to ${MAX_SERVICES} services.`, 409);
+      await db.prepare('INSERT INTO lounge_services (id, member_id, name, price) VALUES (?,?,?,?)').bind(rand(6), me.id, name, price).run();
+    }
+    return json({ lounge: await view(db, me, 'Service saved.') });
+  }
+  if (path === '/lounge/service/delete') {
+    await db.prepare('DELETE FROM lounge_services WHERE id = ? AND member_id = ?').bind(str(d.id, 'Service', 20), me.id).run();
+    return json({ lounge: await view(db, me, 'Service removed.') });
+  }
+  if (path === '/lounge/session/start') {
+    if (!(await db.prepare('SELECT 1 AS x FROM lounge_shifts WHERE member_id = ? AND end_at IS NULL').bind(me.id).first())) fail('Clock in first.', 409);
+    const svc = await db.prepare('SELECT * FROM lounge_services WHERE id = ? AND member_id = ?').bind(str(d.serviceId, 'Service', 20), me.id).first();
+    if (!svc) fail('That is not one of your services.', 404);
+    const minutes = whole(d.minutes, 'The time', 15, 480, 60), customer = str(d.customer, 'Customer', 40, false), now = Date.now();
+    try { await db.prepare('INSERT INTO lounge_sessions (id, member_id, name, customer, rate, minutes, started_at, ends_at) VALUES (?,?,?,?,?,?,?,?)').bind(rand(6), me.id, svc.name, customer, svc.price, minutes, iso(now), iso(now + minutes * 60000)).run(); }
+    catch { fail('You already have a session running. Close it first.', 409); }
+    return json({ lounge: await view(db, me, `Started ${svc.name} for ${minutes} minutes.`) }, 201);
+  }
+  if (path === '/lounge/session/extend') {
+    const minutes = whole(d.minutes, 'The extra time', 15, 480, 30), cur = await mySession(db, me.id);
+    if (!cur) fail('You have no session running.', 404);
+    await db.prepare('UPDATE lounge_sessions SET minutes = minutes + ?, ends_at = ? WHERE id = ?').bind(minutes, iso(Date.parse(cur.endsAt) + minutes * 60000), cur.id).run();
+    return json({ lounge: await view(db, me, `Added ${minutes} minutes.`) });
+  }
+  if (path === '/lounge/session/end' && !(d.name && String(d.name).trim())) {
+    const receipt = await closeSession(db, me.id, me.name);
+    if (!receipt) fail('You have no session running.', 404);
+    return json({ lounge: await view(db, me, 'Session closed.'), receipt });
   }
 
   if (path === '/lounge/pf/posted') {
@@ -151,8 +208,14 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     await db.prepare('DELETE FROM lounge_menu WHERE id = ?').bind(str(d.id, 'Menu item', 20)).run();
     return json({ lounge: await view(db, me, 'Removed from the menu.') });
   }
+  if (path === '/lounge/session/end') {
+    const m = await memberByName(db, d.name), receipt = await closeSession(db, m.id, m.name);
+    if (!receipt) fail(`${m.name} has no session running.`, 404);
+    return json({ lounge: await view(db, me, `Closed ${m.name}'s session.`), receipt });
+  }
   if (path === '/lounge/clockout') {
     const m = await memberByName(db, d.name);
+    await closeSession(db, m.id, m.name);
     if (!(await endShift(db, m.id, me.name))) fail(`${m.name} is not clocked in.`, 409);
     return json({ lounge: await view(db, me, `Clocked out ${m.name}.`) });
   }
@@ -174,12 +237,13 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     let night = null;
     if (t.count > 0 || t.people.length > 0) {
       night = { nightStart: start, closedAt: iso(now), closedBy: me.name, ...t };
-      await db.prepare('INSERT INTO lounge_nights (id, closed_at, closed_by, sold, total, report) VALUES (?,?,?,?,?,?)').bind(rand(6), night.closedAt, me.name, t.count, t.total, JSON.stringify(night)).run();
+      await db.prepare('INSERT INTO lounge_nights (id, closed_at, closed_by, sold, total, report) VALUES (?,?,?,?,?,?)').bind(rand(6), night.closedAt, me.name, t.count, t.grand, JSON.stringify(night)).run();
       await db.prepare('DELETE FROM lounge_nights WHERE id NOT IN (SELECT id FROM lounge_nights ORDER BY closed_at DESC LIMIT 300)').run();
     }
     await setKv(db, 'night_start', iso(now));
     await db.prepare('DELETE FROM lounge_sales WHERE at < ?').bind(cutoff).run();
     await db.prepare('DELETE FROM lounge_shifts WHERE paid = 1 AND end_at < ?').bind(cutoff).run();
+    await db.prepare('DELETE FROM lounge_sessions WHERE closed_at < ?').bind(cutoff).run();
     return json({ lounge: await view(db, me, night ? 'The night is saved to Past nights. A new night has started.' : 'A new night has started. The receipt book is clear.'), night });
   }
   fail('Endpoint not found.', 404);

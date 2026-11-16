@@ -53,3 +53,37 @@ test('the lounge: menu, clock in and out, sales with a handed-over item, receipt
   const by=(await L(boss,'GET','')).lounge.tonight.items;assert.deepEqual(by.find(i=>i.name==='Hot cocoa').by,[{name:'Kael',count:0},{name:'Mira',count:3}]);assert.deepEqual(by.find(i=>i.name==='Noodle bowl').by,[{name:'Kael',count:0},{name:'Mira',count:1}]);
   await L(boss,'POST','/menu/delete',{id:menu[1].id});assert.equal((await L(bar,'GET','')).lounge.menu.length,1);
 });
+
+test('services: each staff member offers their own, books time, extends, closes with a receipt that lands in the receipt book',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const boss=await join(call,'Mira'),bar=await join(call,'Kael');
+  db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Mira'");
+  const L=(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  assert.equal((await L(bar,'POST','/service/save',{name:'Companionship',price:20000})).status,200);
+  assert.equal((await L(boss,'POST','/service/save',{name:'Potion making',price:5000})).status,200);
+  const svcs=(await L(boss,'GET','')).lounge.services;assert.deepEqual(svcs.map(s=>[s.who,s.name,s.price]),[['Kael','Companionship',20000],['Mira','Potion making',5000]]);
+  const mine=svcs.find(s=>s.who==='Kael');
+  assert.equal((await L(boss,'POST','/service/delete',{id:mine.id})).lounge.services.length,2);   // cannot remove someone else's
+  assert.equal((await L(bar,'POST','/session/start',{serviceId:mine.id,minutes:60})).status,409);  // clock in first
+  await L(bar,'POST','/clock',{in:true});
+  assert.equal((await L(bar,'POST','/session/start',{serviceId:svcs.find(s=>s.who==='Mira').id,minutes:60})).status,404);
+  assert.equal((await L(bar,'POST','/session/start',{serviceId:mine.id,minutes:5})).status,400);
+  let r=await L(bar,'POST','/session/start',{serviceId:mine.id,minutes:60,customer:'Rune'});assert.equal(r.status,201);
+  assert.equal(r.lounge.session.minutes,60);assert.equal(r.lounge.sessions[0].who,'Kael');
+  assert.equal((await L(bar,'POST','/session/start',{serviceId:mine.id,minutes:30})).status,409);
+  assert.equal((await L(bar,'POST','/clock',{in:false})).status,409);                              // close the session first
+  const ends=Date.parse(r.lounge.session.endsAt);
+  r=await L(bar,'POST','/session/extend',{minutes:60});assert.equal(r.lounge.session.minutes,120);assert.equal(Date.parse(r.lounge.session.endsAt)-ends,3600000);
+  r=await L(bar,'POST','/session/end',{});assert.equal(r.status,200);
+  assert.deepEqual({s:r.receipt.staff,v:r.receipt.service,c:r.receipt.customer,m:r.receipt.minutes,t:r.receipt.total,rate:r.receipt.rate},{s:'Kael',v:'Companionship',c:'Rune',m:120,t:40000,rate:20000});
+  assert.equal(r.lounge.session,null);assert.equal((await L(bar,'POST','/session/end',{})).status,404);
+  const tn=(await L(boss,'GET','')).lounge.tonight;
+  assert.equal(tn.services.length,1);assert.equal(tn.serviceTotal,40000);assert.equal(tn.grand,40000);assert.equal(tn.people.find(p=>p.name==='Kael').serviceTotal,40000);
+  // a manager can close a running session for someone who left in a hurry, and clocking them out closes it too
+  await L(bar,'POST','/session/start',{serviceId:mine.id,minutes:30});
+  assert.equal((await L(bar,'POST','/session/end',{name:'Kael'})).status,403);
+  r=await L(boss,'POST','/session/end',{name:'Kael'});assert.equal(r.receipt.total,10000);
+  await L(bar,'POST','/session/start',{serviceId:mine.id,minutes:15});
+  await L(boss,'POST','/clockout',{name:'Kael'});assert.equal((await L(bar,'GET','')).lounge.session,null);
+  const closed=await L(boss,'POST','/newnight',{});assert.equal(closed.night.services.length,3);assert.equal(closed.night.serviceTotal,40000+10000+5000);assert.equal((await L(boss,'GET','')).lounge.nights[0].total,55000);
+});
