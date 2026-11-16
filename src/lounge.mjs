@@ -6,7 +6,7 @@ import { who, rand, str, nameKey, itemFields, isStaff } from './items.mjs';
 import { earn, MAX_AMOUNT } from './bank.mjs';
 import { insertGift } from './quests.mjs';
 
-const PING_MS = 30 * 60000, PRESENT_MS = 60000, MANUAL_MS = 3 * 3600000, RETURN_MS = 5 * 60000;
+const PING_MS = 30 * 60000, PRESENT_MS = 100000, MANUAL_MS = 3 * 3600000, RETURN_MS = 5 * 60000;
 export const ROLES = ['Manager', 'Security', 'Bartender', 'Server', 'Host', 'Entertainer', 'Cook', 'Other'];
 export const MAX_SERVICES = 10, MAX_MENU = 60, MAX_SHIFT_MIN = 720, KEEP_DAYS = 90, MAX_QTY = 20;
 const iso = ms => new Date(ms).toISOString();
@@ -208,7 +208,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     if (!old) { await db.prepare('INSERT INTO lounge_patrons (name_key, name, arrived_at, last_seen, manual) VALUES (?,?,?,?,?)').bind(key, name, iso(now), iso(now), manual ? 1 : 0).run(); return; }
     const stale = now - Date.parse(old.last_seen) > (old.manual ? MANUAL_MS : RETURN_MS);
     if (stale) await db.prepare('UPDATE lounge_patrons SET name = ?, arrived_at = ?, last_seen = ?, manual = ?, helper_id = NULL, helper_name = NULL, helped_at = NULL, helped_by = NULL WHERE name_key = ?').bind(name, iso(now), iso(now), manual ? 1 : 0, key).run();
-    else await db.prepare('UPDATE lounge_patrons SET last_seen = ?, manual = CASE WHEN ? = 1 THEN 1 ELSE manual END WHERE name_key = ?').bind(iso(now), manual ? 1 : 0, key).run();
+    else if (manual || now - Date.parse(old.last_seen) > 25000) await db.prepare('UPDATE lounge_patrons SET last_seen = ?, manual = CASE WHEN ? = 1 THEN 1 ELSE manual END WHERE name_key = ?').bind(iso(now), manual ? 1 : 0, key).run();
   };
   if (path === '/lounge/patrons/report') {
     await clockedIn();
