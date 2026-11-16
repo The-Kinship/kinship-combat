@@ -317,6 +317,14 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     for (const r of new Set(d.roles)) await db.prepare('INSERT INTO lounge_roles (member_id, role) VALUES (?,?)').bind(m.id, r).run();
     return json({ lounge: await view(db, me, `Positions saved for ${m.name}.`) });
   }
+  if (path === '/lounge/reset') {
+    if (!isStaff(me.tags)) fail('Only an SM can reset the Lounge.', 403);
+    if (d.confirm !== 'RESET') fail('Type RESET to confirm.');
+    const tables = ['lounge_menu', 'lounge_kv', 'lounge_shifts', 'lounge_sales', 'lounge_services', 'lounge_sessions', 'lounge_patrons', 'lounge_schedule', 'lounge_roster', 'lounge_roles', 'lounge_pings', 'lounge_ping_targets'];
+    if (d.nights === true) tables.push('lounge_nights');
+    for (const t of tables) await db.prepare('DELETE FROM ' + t).run();
+    return json({ lounge: await view(db, me, d.nights === true ? 'The Lounge is reset, including past nights. It is a clean venue.' : 'The Lounge is reset. Past nights were kept.') });
+  }
   if (path === '/lounge/venue/set') {
     const num = (v, k) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > 100000) fail(`${k} is not a valid position.`); return Math.round(v * 100) / 100; };
     const v = { room: str(d.room, 'Room', 60), x: num(d.x, 'x'), y: num(d.y, 'y'), z: num(d.z, 'z'), radius: whole(d.radius, 'Radius', 5, 300, 40), label: str(d.label, 'Label', 60, false) };

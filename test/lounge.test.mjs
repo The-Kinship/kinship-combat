@@ -220,3 +220,18 @@ test('the lounge: the Party Finder reminder stops with Stop, with an empty listi
   await L(boss,'POST','/pf/save',{text:'Open again',minutes:55});await L(a,'POST','/pf/posted',{});
   r=await L(boss,'POST','/closenight',{});assert.equal(r.lounge.pf.postedAt,'');assert.equal(r.lounge.pf.text,'Open again');
 });
+
+test('the lounge: reset wipes the venue but only an SM can, and past nights are optional',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const sm=await join(call,'Mira'),lm=await join(call,'Kael');
+  db.sqlite.exec("UPDATE members SET tags = 'SM' WHERE name = 'Mira'");db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Kael'");
+  const L=async(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  const fill=async()=>{await L(lm,'POST','/menu/save',{name:'Tea',price:100});await L(lm,'POST','/info',{hours:'Fri',rate:100});await L(lm,'POST','/clock',{in:true});
+    const id=(await L(lm,'GET','')).lounge.menu[0].id;await L(lm,'POST','/sell',{menuId:id});await L(lm,'POST','/roles/set',{name:'Kael',roles:['Security']});await L(lm,'POST','/ad/save',{text:'Hello'});};
+  await fill();await L(lm,'POST','/closenight',{});
+  assert.equal((await L(lm,'POST','/reset',{confirm:'RESET'})).status,403);            // a Lounge Manager is not an SM
+  assert.equal((await L(sm,'POST','/reset',{})).status,400);                           // must type RESET
+  let r=await L(sm,'POST','/reset',{confirm:'RESET'});assert.equal(r.status,200);
+  const v=r.lounge;assert.deepEqual([v.menu.length,v.hours,v.adText,v.roles.length,v.working.length,v.nightOpen],[0,'',''  ,0,0,true]);assert.equal(v.nights.length,1);   // past nights kept
+  await fill();r=await L(sm,'POST','/reset',{confirm:'RESET',nights:true});assert.equal(r.lounge.nights.length,0);assert.equal(r.lounge.tonight.count,0);
+});
