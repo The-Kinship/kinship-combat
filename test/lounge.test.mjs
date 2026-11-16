@@ -177,3 +177,13 @@ test('the lounge: staff positions and call buttons',async t=>{
   await L(sec2,'POST','/call/dismiss',{id:(await L(sec2,'GET','')).lounge.pings[0].id});assert.equal((await L(sec2,'GET','')).lounge.pings.length,0);
   assert.equal((await L(a,'GET','')).lounge.working.find(w=>w.name==='Rune').roles[0],'Security');
 });
+
+test('the lounge: the only person with a position gets their own call',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const boss=await join(call,'Mira');db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Mira'");
+  const L=async(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  await L(boss,'POST','/roles/set',{name:'Mira',roles:['Security']});await L(boss,'POST','/clock',{in:true});
+  let r=await L(boss,'POST','/call/security',{});assert.equal(r.status,200);assert.match(r.lounge.msg,/test/);
+  assert.equal(r.lounge.pings[0].text,'Mira requests security');
+  r=await L(boss,'POST','/call/manager',{ic:'IC'});assert.equal(r.status,200);                // falls back to the Lounge Manager tag
+});

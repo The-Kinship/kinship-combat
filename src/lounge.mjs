@@ -247,6 +247,8 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     const ids = new Set((await db.prepare('SELECT member_id FROM lounge_roles WHERE role = ?').bind(role).all()).results.map(r => r.member_id));
     let targets = onShift.filter(r => ids.has(r.id));
     if (!targets.length && role === 'Manager') targets = onShift.filter(r => isManager(r));
+    let self = false;
+    if (!targets.length && (ids.has(me.id) || (role === 'Manager' && isManager(me)))) { targets = [{ id: me.id, name: me.name }]; self = true; }   // the only one on shift: it comes to you, so you can see it works
     if (!targets.length) return null;
     const id = rand(6);
     await db.prepare('INSERT INTO lounge_pings (id, kind, from_id, from_name, text, created_at) VALUES (?,?,?,?,?,?)').bind(id, kind, me.id, me.name, text, iso(Date.now())).run();
@@ -254,7 +256,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     const old = iso(Date.now() - 86400000);
     await db.prepare('DELETE FROM lounge_ping_targets WHERE ping_id IN (SELECT id FROM lounge_pings WHERE created_at < ?)').bind(old).run();
     await db.prepare('DELETE FROM lounge_pings WHERE created_at < ?').bind(old).run();
-    return targets.map(t => t.name);
+    return { names: targets.map(t => t.name), self };
   };
   if (path === '/lounge/call/manager' || path === '/lounge/call/security' || path === '/lounge/call/ban') {
     await clockedIn();
@@ -269,7 +271,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     }
     const sent = await sendPing(kind, text, role);
     if (!sent) fail(kind === 'security' ? 'Nobody on shift has the Security position right now.' : 'No manager is on shift right now.', 409);
-    return json({ lounge: await view(db, me, `Sent to ${sent.join(', ')}.`) });
+    return json({ lounge: await view(db, me, sent.self ? 'Nobody else on shift has that position, so the call came to you as a test.' : `Sent to ${sent.names.join(', ')}.`) });
   }
   if (path === '/lounge/call/respond') {
     const id = str(d.id, 'Call', 20);
