@@ -43,7 +43,7 @@ async function view(db, me, msg = '', extra = {}) {
   const unpaid = (await db.prepare('SELECT minutes, rate FROM lounge_shifts WHERE member_id = ? AND paid = 0 AND end_at IS NOT NULL').bind(me.id).all()).results;
   const mine = await db.prepare('SELECT coalesce(sum(qty), 0) AS count, coalesce(sum(qty * price), 0) AS total FROM lounge_sales WHERE member_id = ? AND at >= ?').bind(me.id, nightStart).first();
   const out = {
-    ...extra, msg, canManage: manager,
+    ...extra, msg, canManage: manager, nightOpen: (await kv(db, 'night_open', '1')) !== '0',
     services: (await db.prepare('SELECT s.id, s.name, s.price, m.name AS who FROM lounge_services s JOIN members m ON m.id = s.member_id ORDER BY m.name, s.name LIMIT 300').all()).results,
     session: await mySession(db, me.id),
     sessions: (await db.prepare('SELECT m.name AS who, s.name, s.customer, s.ends_at FROM lounge_sessions s JOIN members m ON m.id = s.member_id WHERE s.closed_at IS NULL ORDER BY s.ends_at LIMIT 50').all()).results.map(r => ({ who: r.who, name: r.name, customer: r.customer, endsAt: r.ends_at })), pf: { text: await kv(db, 'pf_text'), minutes: Number(await kv(db, 'pf_minutes', '55')), postedAt: await kv(db, 'pf_posted_at'), postedBy: await kv(db, 'pf_posted_by') }, hours: await kv(db, 'hours'), rate: Number(await kv(db, 'rate', '0')), nightStart, menu, working,
@@ -122,6 +122,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
   }
 
   if (path === '/lounge/sell') {
+    if ((await kv(db, 'night_open', '1')) === '0') fail('The night is closed. A manager needs to start a new night first.', 409);
     if (!(await db.prepare('SELECT 1 AS x FROM lounge_shifts WHERE member_id = ? AND end_at IS NULL').bind(me.id).first())) fail('Clock in first.', 409);
     const item = await db.prepare('SELECT * FROM lounge_menu WHERE id = ?').bind(str(d.menuId, 'Menu item', 20)).first();
     if (!item) fail('That menu item no longer exists.', 404);
@@ -336,7 +337,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     }
     return json({ lounge: await view(db, me, `Paid ${m.name} ${total.toLocaleString('en-US')} gold into their bank.`) });
   }
-  if (path === '/lounge/newnight') {
+  const closeNight = async () => {
     const now = Date.now(), cutoff = iso(now - KEEP_DAYS * 86400000), start = await kv(db, 'night_start', '1970-01-01T00:00:00.000Z');
     const t = await tonight(db, start);
     let night = null;
@@ -349,6 +350,20 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     await db.prepare('DELETE FROM lounge_sales WHERE at < ?').bind(cutoff).run();
     await db.prepare('DELETE FROM lounge_shifts WHERE paid = 1 AND end_at < ?').bind(cutoff).run();
     await db.prepare('DELETE FROM lounge_sessions WHERE closed_at < ?').bind(cutoff).run();
+    return night;
+  };
+  if (path === '/lounge/closenight') {
+    if ((await kv(db, 'night_open', '1')) === '0') fail('The night is already closed.', 409);
+    const night = await closeNight(); await setKv(db, 'night_open', '0');
+    return json({ lounge: await view(db, me, night ? 'The night is closed and saved to Past nights.' : 'The night is closed. Nothing had been sold.'), night });
+  }
+  if (path === '/lounge/startnight') {
+    if ((await kv(db, 'night_open', '1')) !== '0') fail('A night is already open.', 409);
+    await setKv(db, 'night_start', iso(Date.now())); await setKv(db, 'night_open', '1');
+    return json({ lounge: await view(db, me, 'A new night has started. The receipt book is clear.') });
+  }
+  if (path === '/lounge/newnight') {
+    const night = await closeNight(); await setKv(db, 'night_open', '1');
     return json({ lounge: await view(db, me, night ? 'The night is saved to Past nights. A new night has started.' : 'A new night has started. The receipt book is clear.'), night });
   }
   fail('Endpoint not found.', 404);

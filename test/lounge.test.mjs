@@ -129,3 +129,21 @@ test('the lounge: patrons, who is helping them, schedule and advert',async t=>{
   assert.equal((await L(a,'POST','/schedule/rsvp',{nightId:id,on:false})).lounge.schedule[0].staff.length,0);
   assert.equal((await L(boss,'POST','/schedule/delete',{id})).lounge.schedule.length,0);
 });
+
+test('the lounge: close the night and start a new one are separate steps',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const boss=await join(call,'Mira'),bar=await join(call,'Kael');
+  db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Mira'");
+  const L=async(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  await L(boss,'POST','/menu/save',{name:'Tea',price:100});const id=(await L(bar,'GET','')).lounge.menu[0].id;
+  assert.equal((await L(bar,'GET','')).lounge.nightOpen,true);
+  await L(bar,'POST','/clock',{in:true});assert.equal((await L(bar,'POST','/sell',{menuId:id})).status,201);
+  assert.equal((await L(bar,'POST','/closenight',{})).status,403);
+  let r=await L(boss,'POST','/closenight',{});assert.equal(r.status,200);assert.equal(r.night.count,1);assert.equal(r.lounge.nightOpen,false);assert.equal(r.lounge.nights.length,1);
+  assert.equal((await L(boss,'POST','/closenight',{})).status,409);
+  r=await L(bar,'POST','/sell',{menuId:id});assert.equal(r.status,409);assert.match(r.error,/closed/);
+  assert.equal((await L(boss,'POST','/startnight',{})).lounge.nightOpen,true);
+  assert.equal((await L(boss,'POST','/startnight',{})).status,409);
+  assert.equal((await L(bar,'POST','/sell',{menuId:id})).lounge.tonight,undefined);
+  assert.equal((await L(boss,'GET','')).lounge.tonight.count,1);
+});
