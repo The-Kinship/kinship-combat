@@ -26,7 +26,14 @@ async function view(db, me, msg = '') {
     me: { since: open ? open.start_at : '', unpaidMinutes: unpaid.reduce((n, s) => n + s.minutes, 0), unpaidGold: unpaid.reduce((n, s) => n + shiftGold(s), 0), soldCount: mine.count, soldTotal: mine.total },
   };
   if (manager) {
-    const items = (await db.prepare('SELECT name, price, sum(qty) AS count FROM lounge_sales WHERE at >= ? GROUP BY name, price ORDER BY name').bind(nightStart).all()).results.map(r => ({ name: r.name, price: r.price, count: r.count, total: r.count * r.price }));
+    // who sold what: every item lists everyone who sold anything or worked a shift tonight, with zeros where they sold none
+    const sold = (await db.prepare('SELECT s.name, s.price, m.name AS who, sum(s.qty) AS count FROM lounge_sales s JOIN members m ON m.id = s.member_id WHERE s.at >= ? GROUP BY s.name, s.price, m.name').bind(nightStart).all()).results;
+    const worked = (await db.prepare('SELECT DISTINCT m.name FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.start_at >= ? OR s.end_at IS NULL').bind(nightStart).all()).results.map(r => r.name);
+    const people = [...new Set([...worked, ...sold.map(r => r.who)])].sort((x, y) => x.localeCompare(y));
+    const items = (await db.prepare('SELECT name, price, sum(qty) AS count FROM lounge_sales WHERE at >= ? GROUP BY name, price ORDER BY name').bind(nightStart).all()).results.map(r => ({
+      name: r.name, price: r.price, count: r.count, total: r.count * r.price,
+      by: people.map(who => ({ name: who, count: sold.find(x => x.name === r.name && x.price === r.price && x.who === who)?.count ?? 0 })),
+    }));
     out.tonight = { items, count: items.reduce((n, i) => n + i.count, 0), total: items.reduce((n, i) => n + i.total, 0) };
     const staff = new Map();
     const rows = (await db.prepare("SELECT m.name, s.minutes, s.rate, s.end_at FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.end_at IS NULL OR s.paid = 0 LIMIT 500").all()).results;
