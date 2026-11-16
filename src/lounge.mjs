@@ -54,8 +54,11 @@ async function view(db, me, msg = '', extra = {}) {
   const roleRows = (await db.prepare('SELECT m.name, r.role FROM lounge_roles r JOIN members m ON m.id = r.member_id ORDER BY m.name LIMIT 400').all()).results;
   out.roles = [...new Set(roleRows.map(r => r.name))].map(name => ({ name, roles: ROLES.filter(x => roleRows.some(r => r.name === name && r.role === x)) }));
   out.working = out.working.map(w => ({ ...w, roles: out.roles.find(r => r.name === w.name)?.roles ?? [] }));
-  out.pings = (await db.prepare('SELECT p.id, p.kind, p.text, p.created_at, p.responder FROM lounge_ping_targets t JOIN lounge_pings p ON p.id = t.ping_id WHERE t.member_id = ? AND t.done = 0 AND p.created_at >= ? ORDER BY p.created_at LIMIT 5').bind(me.id, iso(now - PING_MS)).all()).results
+  out.pings = (await db.prepare('SELECT p.id, p.kind, p.text, p.created_at, p.responder FROM lounge_ping_targets t JOIN lounge_pings p ON p.id = t.ping_id WHERE t.member_id = ? AND t.done = 0 AND p.cleared_at IS NULL AND p.created_at >= ? ORDER BY p.created_at LIMIT 5').bind(me.id, iso(now - PING_MS)).all()).results
     .map(r => ({ id: r.id, kind: r.kind, text: r.text, at: r.created_at, responder: r.responder || '' }));
+  out.calls = (await db.prepare('SELECT id, kind, text, created_at, responder FROM lounge_pings WHERE cleared_at IS NULL AND created_at >= ? ORDER BY created_at LIMIT 30').bind(iso(now - 12 * 3600000)).all()).results
+    .map(r => ({ id: r.id, kind: r.kind, text: r.text, at: r.created_at, responder: r.responder || '' }));
+  out.canClearCalls = manager || (out.roles.find(r => r.name === me.name)?.roles ?? []).includes('Manager');
   out.adText = await kv(db, 'ad_text');
   const venue = await kv(db, 'venue');
   out.venue = venue ? JSON.parse(venue) : null;
@@ -275,9 +278,19 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
   }
   if (path === '/lounge/call/respond') {
     const id = str(d.id, 'Call', 20);
-    await db.prepare('UPDATE lounge_pings SET responder = ? WHERE id = ? AND responder IS NULL AND id IN (SELECT ping_id FROM lounge_ping_targets WHERE member_id = ?)').bind(me.name, id, me.id).run();
+    await clockedIn();
+    const c = await db.prepare('SELECT responder, cleared_at FROM lounge_pings WHERE id = ?').bind(id).first();
+    if (!c || c.cleared_at) fail('That call has already been cleared.', 404);
+    if (c.responder && c.responder !== me.name) fail(`${c.responder} is already on it.`, 409);
+    await db.prepare('UPDATE lounge_pings SET responder = ? WHERE id = ?').bind(me.name, id).run();
     await db.prepare('UPDATE lounge_ping_targets SET done = 1 WHERE ping_id = ? AND member_id = ?').bind(id, me.id).run();
     return json({ lounge: await view(db, me, 'Thank you, they know you are on the way.') });
+  }
+  if (path === '/lounge/call/clear') {
+    const can = isManager(me) || !!(await db.prepare("SELECT 1 AS x FROM lounge_roles WHERE member_id = ? AND role = 'Manager'").bind(me.id).first());
+    if (!can) fail('Only a manager can clear a call.', 403);
+    await db.prepare('UPDATE lounge_pings SET cleared_at = ? WHERE id = ? AND cleared_at IS NULL').bind(iso(Date.now()), str(d.id, 'Call', 20)).run();
+    return json({ lounge: await view(db, me, 'Call cleared.') });
   }
   if (path === '/lounge/call/dismiss') {
     await db.prepare('UPDATE lounge_ping_targets SET done = 1 WHERE ping_id = ? AND member_id = ?').bind(str(d.id, 'Call', 20), me.id).run();

@@ -187,3 +187,23 @@ test('the lounge: the only person with a position gets their own call',async t=>
   assert.equal(r.lounge.pings[0].text,'Mira requests security');
   r=await L(boss,'POST','/call/manager',{ic:'IC'});assert.equal(r.status,200);                // falls back to the Lounge Manager tag
 });
+
+test('the lounge: the calls box shows open and assigned calls until a manager clears them',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const boss=await join(call,'Mira'),a=await join(call,'Kael'),sec=await join(call,'Rune'),b=await join(call,'Tess');
+  db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Mira'");
+  const L=async(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  await L(boss,'POST','/roles/set',{name:'Rune',roles:['Security']});await L(boss,'POST','/roles/set',{name:'Tess',roles:['Manager']});
+  for(const tk of [boss,a,sec,b])await L(tk,'POST','/clock',{in:true});
+  await L(a,'POST','/call/security',{});await L(a,'POST','/call/manager',{ic:'IC'});
+  let v=(await L(b,'GET','')).lounge;assert.deepEqual(v.calls.map(c=>[c.text,c.responder]),[['Kael requests security',''],['Kael requests a manager (IC)','']]);
+  assert.equal(v.canClearCalls,true);assert.equal((await L(a,'GET','')).lounge.canClearCalls,false);
+  const id=v.calls[0].id;
+  assert.equal((await L(a,'POST','/call/clear',{id})).status,403);
+  assert.equal((await L(sec,'POST','/call/respond',{id})).status,200);
+  assert.equal((await L(boss,'POST','/call/respond',{id})).status,409);
+  assert.equal((await L(a,'GET','')).lounge.calls[0].responder,'Rune');
+  assert.equal((await L(b,'POST','/call/clear',{id})).lounge.calls.length,1);              // a Manager position can clear too
+  assert.equal((await L(sec,'GET','')).lounge.pings.length,0);
+  assert.equal((await L(boss,'POST','/call/clear',{id:v.calls[1].id})).lounge.calls.length,0);
+});
