@@ -207,3 +207,16 @@ test('the lounge: the calls box shows open and assigned calls until a manager cl
   assert.equal((await L(sec,'GET','')).lounge.pings.length,0);
   assert.equal((await L(boss,'POST','/call/clear',{id:v.calls[1].id})).lounge.calls.length,0);
 });
+
+test('the lounge: the Party Finder reminder stops with Stop, with an empty listing, and when the night closes',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const boss=await join(call,'Mira'),a=await join(call,'Kael');db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Mira'");
+  const L=async(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  assert.equal((await L(a,'POST','/pf/posted',{})).status,409);                        // nothing written yet
+  await L(boss,'POST','/pf/save',{text:'Embershade Lounge is open!',minutes:55});
+  assert.equal((await L(a,'POST','/pf/posted',{})).lounge.pf.postedBy,'Kael');
+  let r=await L(a,'POST','/pf/stop',{});assert.equal(r.lounge.pf.postedAt,'');assert.equal(r.lounge.pf.text,'Embershade Lounge is open!');   // text is kept
+  await L(a,'POST','/pf/posted',{});assert.equal((await L(boss,'POST','/pf/save',{text:'',minutes:55})).lounge.pf.postedAt,'');
+  await L(boss,'POST','/pf/save',{text:'Open again',minutes:55});await L(a,'POST','/pf/posted',{});
+  r=await L(boss,'POST','/closenight',{});assert.equal(r.lounge.pf.postedAt,'');assert.equal(r.lounge.pf.text,'Open again');
+});

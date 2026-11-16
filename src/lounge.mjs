@@ -192,7 +192,12 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     return json({ lounge: await view(db, me, 'Session closed.'), receipt });
   }
 
+  if (path === '/lounge/pf/stop') {
+    await setKv(db, 'pf_posted_at', ''); await setKv(db, 'pf_posted_by', '');
+    return json({ lounge: await view(db, me, 'The listing is off and the reminder is stopped. The saved text is kept for next time.') });
+  }
   if (path === '/lounge/pf/posted') {
+    if (!(await kv(db, 'pf_text'))) fail('There is no listing to post. A manager needs to write one first.', 409);
     await setKv(db, 'pf_posted_at', iso(Date.now())); await setKv(db, 'pf_posted_by', me.name);
     return json({ lounge: await view(db, me, 'Thank you! The reminder will tell you when to refresh the listing.') });
   }
@@ -354,6 +359,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
   }
   if (path === '/lounge/pf/save') {
     await setKv(db, 'pf_text', str(d.text, 'Party Finder text', 192, false));
+    if (!(await kv(db, 'pf_text'))) { await setKv(db, 'pf_posted_at', ''); await setKv(db, 'pf_posted_by', ''); }   // no listing, nothing to remind about
     await setKv(db, 'pf_minutes', String(whole(d.minutes, 'Minutes', 5, 120, 55)));
     return json({ lounge: await view(db, me, 'Party Finder text saved.') });
   }
@@ -416,6 +422,7 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
       await db.prepare('DELETE FROM lounge_nights WHERE id NOT IN (SELECT id FROM lounge_nights ORDER BY closed_at DESC LIMIT 300)').run();
     }
     await setKv(db, 'night_start', iso(now));
+    await setKv(db, 'pf_posted_at', ''); await setKv(db, 'pf_posted_by', '');   // closing the night turns the listing off; the text is kept for next week
     await db.prepare('DELETE FROM lounge_sales WHERE at < ?').bind(cutoff).run();
     await db.prepare('DELETE FROM lounge_shifts WHERE paid = 1 AND end_at < ?').bind(cutoff).run();
     await db.prepare('DELETE FROM lounge_sessions WHERE closed_at < ?').bind(cutoff).run();
