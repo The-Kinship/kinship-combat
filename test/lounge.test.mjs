@@ -87,3 +87,45 @@ test('services: each staff member offers their own, books time, extends, closes 
   await L(boss,'POST','/clockout',{name:'Kael'});assert.equal((await L(bar,'GET','')).lounge.session,null);
   const closed=await L(boss,'POST','/newnight',{});assert.equal(closed.night.services.length,3);assert.equal(closed.night.serviceTotal,40000+10000+5000);assert.equal((await L(boss,'GET','')).lounge.nights[0].total,55000);
 });
+
+test('the lounge: patrons, who is helping them, schedule and advert',async t=>{
+  const db=database();t.after(()=>db.sqlite.close());const call=mk(db);
+  const boss=await join(call,'Mira'),a=await join(call,'Kael'),b=await join(call,'Rune');
+  db.sqlite.exec("UPDATE members SET tags = 'Lounge Manager' WHERE name = 'Mira'");
+  const L=async(token,m,p,d)=>call(m,'/lounge'+p,d,token);
+  assert.equal((await L(a,'POST','/patrons/report',{names:['Ada Vale']})).status,409);          // clock in first
+  await L(a,'POST','/clock',{in:true});await L(b,'POST','/clock',{in:true});
+  let r=await L(a,'POST','/patrons/report',{names:['Ada Vale','Bram Oak','Kael','  ']});assert.equal(r.status,200);
+  assert.deepEqual(r.lounge.patrons.map(p=>p.name),['Ada Vale','Bram Oak']);                     // staff are not patrons
+  assert.equal((await L(a,'POST','/patrons/help',{name:'Ada Vale'})).lounge.patrons[0].helper,'Kael');
+  r=await L(b,'POST','/patrons/help',{name:'Ada Vale'});assert.equal(r.status,409);assert.match(r.error,/Kael is already helping/);
+  assert.equal((await L(b,'POST','/patrons/unhelp',{name:'Ada Vale'})).status,403);
+  assert.equal((await L(boss,'GET','')).lounge.patrons[0].helper,'Kael');
+  r=await L(a,'POST','/patrons/done',{name:'Ada Vale'});assert.equal(r.lounge.patrons[0].helper,'');assert.equal(r.lounge.patrons[0].helpedBy,'Kael');
+  r=await L(b,'POST','/patrons/help',{name:'Bram Oak'});assert.equal(r.status,200);
+  r=await L(b,'POST','/patrons/unhelp',{name:'Bram Oak'});assert.equal(r.lounge.patrons[1].helper,'');assert.equal(r.lounge.patrons[1].helpedBy,'');
+  await L(b,'POST','/patrons/help',{name:'Bram Oak'});await L(boss,'POST','/clockout',{name:'Rune'});   // clocking out releases them
+  assert.equal((await L(a,'GET','')).lounge.patrons[1].helper,'');
+  assert.equal((await L(a,'POST','/patrons/add',{name:'Walk In'})).lounge.patrons.length,3);
+  db.sqlite.exec("UPDATE lounge_patrons SET last_seen = '"+new Date(Date.now()-120000).toISOString()+"' WHERE name = 'Ada Vale'");
+  assert.deepEqual((await L(a,'GET','')).lounge.patrons.map(p=>p.name),['Bram Oak','Walk In']);   // not seen for a minute: gone
+  await L(a,'POST','/patrons/remove',{name:'Walk In'});assert.equal((await L(a,'GET','')).lounge.patrons.length,1);
+  db.sqlite.exec("UPDATE lounge_patrons SET last_seen = '"+new Date(Date.now()-400000).toISOString()+"' WHERE name = 'Bram Oak'");
+  r=await L(a,'POST','/patrons/report',{names:['Bram Oak']});assert.equal(r.lounge.patrons[0].helpedBy,'');   // returned later: a fresh visit
+
+  assert.equal((await L(a,'POST','/venue/set',{room:'h1-2-3',x:1,y:2,z:3})).status,403);
+  r=await L(boss,'POST','/venue/set',{room:'h33-1-5-12-0',x:10.123,y:0,z:-4,radius:25,label:'Embershade'});assert.equal(r.lounge.venue.radius,25);assert.equal((await L(a,'GET','')).lounge.venue.room,'h33-1-5-12-0');
+  assert.equal((await L(boss,'POST','/venue/clear',{})).lounge.venue,null);
+  assert.equal((await L(a,'POST','/ad/save',{text:'x'})).status,403);
+  assert.equal((await L(boss,'POST','/ad/save',{text:'Come to the Embershade Lounge!'})).lounge.adText,'Come to the Embershade Lounge!');
+
+  const s=Date.now()+2*86400000,e=s+4*3600000;
+  assert.equal((await L(a,'POST','/schedule/save',{startsAt:new Date(s).toISOString(),endsAt:new Date(e).toISOString()})).status,403);
+  assert.equal((await L(boss,'POST','/schedule/save',{startsAt:new Date(e).toISOString(),endsAt:new Date(s).toISOString()})).status,400);
+  r=await L(boss,'POST','/schedule/save',{startsAt:new Date(s).toISOString(),endsAt:new Date(e).toISOString(),note:'Live music'});assert.equal(r.lounge.schedule.length,1);
+  const id=r.lounge.schedule[0].id;
+  r=await L(a,'POST','/schedule/rsvp',{nightId:id,on:true});assert.equal(r.lounge.schedule[0].mine,'available');
+  r=await L(boss,'POST','/roster/set',{nightId:id,name:'Kael',status:'working'});assert.deepEqual(r.lounge.schedule[0].staff,[{name:'Kael',status:'working'}]);
+  assert.equal((await L(a,'POST','/schedule/rsvp',{nightId:id,on:false})).lounge.schedule[0].staff.length,0);
+  assert.equal((await L(boss,'POST','/schedule/delete',{id})).lounge.schedule.length,0);
+});

@@ -6,6 +6,7 @@ import { who, rand, str, nameKey, itemFields, isStaff } from './items.mjs';
 import { earn, MAX_AMOUNT } from './bank.mjs';
 import { insertGift } from './quests.mjs';
 
+const PRESENT_MS = 60000, MANUAL_MS = 3 * 3600000, RETURN_MS = 5 * 60000;
 export const MAX_SERVICES = 10, MAX_MENU = 60, MAX_SHIFT_MIN = 720, KEEP_DAYS = 90, MAX_QTY = 20;
 const iso = ms => new Date(ms).toISOString();
 const whole = (v, name, lo, hi, dflt) => { if (v === undefined || v === null) return dflt; if (!Number.isInteger(v) || v < lo || v > hi) fail(`${name} must be a whole number from ${lo.toLocaleString('en-US')} to ${hi.toLocaleString('en-US')}.`); return v; };
@@ -48,6 +49,15 @@ async function view(db, me, msg = '', extra = {}) {
     sessions: (await db.prepare('SELECT m.name AS who, s.name, s.customer, s.ends_at FROM lounge_sessions s JOIN members m ON m.id = s.member_id WHERE s.closed_at IS NULL ORDER BY s.ends_at LIMIT 50').all()).results.map(r => ({ who: r.who, name: r.name, customer: r.customer, endsAt: r.ends_at })), pf: { text: await kv(db, 'pf_text'), minutes: Number(await kv(db, 'pf_minutes', '55')), postedAt: await kv(db, 'pf_posted_at'), postedBy: await kv(db, 'pf_posted_by') }, hours: await kv(db, 'hours'), rate: Number(await kv(db, 'rate', '0')), nightStart, menu, working,
     me: { since: open ? open.start_at : '', unpaidMinutes: unpaid.reduce((n, s) => n + s.minutes, 0), unpaidGold: unpaid.reduce((n, s) => n + shiftGold(s), 0), soldCount: mine.count, soldTotal: mine.total },
   };
+  const now = Date.now();
+  out.adText = await kv(db, 'ad_text');
+  const venue = await kv(db, 'venue');
+  out.venue = venue ? JSON.parse(venue) : null;
+  out.patrons = (await db.prepare('SELECT * FROM lounge_patrons WHERE last_seen >= ? OR (manual = 1 AND last_seen >= ?) ORDER BY arrived_at LIMIT 150').bind(iso(now - PRESENT_MS), iso(now - MANUAL_MS)).all()).results
+    .map(r => ({ name: r.name, arrivedAt: r.arrived_at, helper: r.helper_name || '', mine: r.helper_id === me.id, helpedAt: r.helped_at || '', helpedBy: r.helped_by || '', manual: !!r.manual }));
+  const nights = (await db.prepare('SELECT * FROM lounge_schedule WHERE ends_at >= ? ORDER BY starts_at LIMIT 40').bind(iso(now - 3600000)).all()).results;
+  const roster = nights.length ? (await db.prepare('SELECT r.night_id, r.member_id, r.status, m.name FROM lounge_roster r JOIN members m ON m.id = r.member_id WHERE r.night_id IN (' + nights.map(() => '?').join(',') + ') ORDER BY m.name').bind(...nights.map(n => n.id)).all()).results : [];
+  out.schedule = nights.map(n => ({ id: n.id, startsAt: n.starts_at, endsAt: n.ends_at, note: n.note, staff: roster.filter(r => r.night_id === n.id).map(r => ({ name: r.name, status: r.status })), mine: roster.find(r => r.night_id === n.id && r.member_id === me.id)?.status || '' }));
   if (manager) {
     out.tonight = await tonight(db, nightStart);
     out.nights = (await db.prepare('SELECT id, closed_at, sold, total FROM lounge_nights ORDER BY closed_at DESC LIMIT 52').all()).results.map(r => ({ id: r.id, closedAt: r.closed_at, count: r.sold, total: r.total }));
@@ -82,6 +92,7 @@ async function endShift(db, memberId, by) {
   if (!s) return false;
   const now = Date.now(), minutes = Math.min(MAX_SHIFT_MIN, Math.max(0, Math.round((now - Date.parse(s.start_at)) / 60000)));
   await db.prepare('UPDATE lounge_shifts SET end_at = ?, minutes = ?, ended_by = ? WHERE id = ?').bind(iso(now), minutes, by, s.id).run();
+  await db.prepare('UPDATE lounge_patrons SET helper_id = NULL, helper_name = NULL WHERE helper_id = ?').bind(memberId).run();   // anyone they were helping goes back to waiting
   return true;
 }
 async function memberByName(db, v) {
@@ -176,7 +187,101 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     return json({ lounge: await view(db, me, 'Thank you! The reminder will tell you when to refresh the listing.') });
   }
 
+  const clockedIn = async () => { if (!(await db.prepare('SELECT 1 AS x FROM lounge_shifts WHERE member_id = ? AND end_at IS NULL').bind(me.id).first())) fail('Clock in first.', 409); };
+  const touchPatron = async (name, manual) => {
+    const key = nameKey(name), now = Date.now(), old = await db.prepare('SELECT last_seen, manual FROM lounge_patrons WHERE name_key = ?').bind(key).first();
+    if (!old) { await db.prepare('INSERT INTO lounge_patrons (name_key, name, arrived_at, last_seen, manual) VALUES (?,?,?,?,?)').bind(key, name, iso(now), iso(now), manual ? 1 : 0).run(); return; }
+    const stale = now - Date.parse(old.last_seen) > (old.manual ? MANUAL_MS : RETURN_MS);
+    if (stale) await db.prepare('UPDATE lounge_patrons SET name = ?, arrived_at = ?, last_seen = ?, manual = ?, helper_id = NULL, helper_name = NULL, helped_at = NULL, helped_by = NULL WHERE name_key = ?').bind(name, iso(now), iso(now), manual ? 1 : 0, key).run();
+    else await db.prepare('UPDATE lounge_patrons SET last_seen = ?, manual = CASE WHEN ? = 1 THEN 1 ELSE manual END WHERE name_key = ?').bind(iso(now), manual ? 1 : 0, key).run();
+  };
+  if (path === '/lounge/patrons/report') {
+    await clockedIn();
+    if (!Array.isArray(d.names)) fail('Names must be a list.');
+    const staffKeys = new Set((await db.prepare('SELECT m.name_key FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.end_at IS NULL').all()).results.map(r => r.name_key));
+    const seen = new Set();
+    for (const raw of d.names.slice(0, 60)) {
+      const name = String(raw ?? '').trim().replace(/\s+/g, ' ').slice(0, 40), key = nameKey(name);
+      if (!name || seen.has(key) || staffKeys.has(key)) continue;
+      seen.add(key); await touchPatron(name, false);
+    }
+    return json({ lounge: await view(db, me) });
+  }
+  if (path === '/lounge/patrons/add') {
+    await clockedIn(); await touchPatron(str(d.name, 'Name', 40), true);
+    return json({ lounge: await view(db, me, 'Added.') });
+  }
+  if (path === '/lounge/patrons/remove') {
+    await clockedIn();
+    await db.prepare("UPDATE lounge_patrons SET last_seen = '1970-01-01T00:00:00.000Z', manual = 0, helper_id = NULL, helper_name = NULL WHERE name_key = ?").bind(nameKey(str(d.name, 'Name', 40))).run();
+    return json({ lounge: await view(db, me, 'Removed from the list.') });
+  }
+  if (path === '/lounge/patrons/help') {
+    await clockedIn();
+    const key = nameKey(str(d.name, 'Name', 40)), r = await db.prepare('UPDATE lounge_patrons SET helper_id = ?, helper_name = ? WHERE name_key = ? AND last_seen >= ? AND (helper_id IS NULL OR helper_id = ?)').bind(me.id, me.name, key, iso(Date.now() - MANUAL_MS), me.id).run();
+    if (!r.meta.changes) {
+      const p = await db.prepare('SELECT helper_name FROM lounge_patrons WHERE name_key = ?').bind(key).first();
+      fail(p?.helper_name ? `${p.helper_name} is already helping them.` : 'They are not in the venue.', 409);
+    }
+    return json({ lounge: await view(db, me, 'You are helping them.') });
+  }
+  if (path === '/lounge/patrons/unhelp' || path === '/lounge/patrons/done') {
+    const key = nameKey(str(d.name, 'Name', 40)), p = await db.prepare('SELECT helper_id, helper_name FROM lounge_patrons WHERE name_key = ?').bind(key).first();
+    if (!p || !p.helper_id) fail('Nobody is helping them right now.', 409);
+    if (p.helper_id !== me.id && !isManager(me)) fail(`Only ${p.helper_name} or a manager can do that.`, 403);
+    if (path.endsWith('/done')) await db.prepare('UPDATE lounge_patrons SET helped_at = ?, helped_by = ?, helper_id = NULL, helper_name = NULL WHERE name_key = ?').bind(iso(Date.now()), p.helper_name, key).run();
+    else await db.prepare('UPDATE lounge_patrons SET helper_id = NULL, helper_name = NULL WHERE name_key = ?').bind(key).run();
+    return json({ lounge: await view(db, me, path.endsWith('/done') ? 'Marked as helped.' : 'Released. They are waiting for help again.') });
+  }
+  if (path === '/lounge/schedule/rsvp') {
+    const n = await db.prepare('SELECT id FROM lounge_schedule WHERE id = ?').bind(str(d.nightId, 'Night', 20)).first();
+    if (!n) fail('That night is no longer on the schedule.', 404);
+    if (d.on === true) await db.prepare("INSERT INTO lounge_roster (night_id, member_id, status) VALUES (?,?,'available') ON CONFLICT(night_id, member_id) DO NOTHING").bind(n.id, me.id).run();
+    else await db.prepare('DELETE FROM lounge_roster WHERE night_id = ? AND member_id = ?').bind(n.id, me.id).run();
+    return json({ lounge: await view(db, me, d.on === true ? 'Marked you as available.' : 'Removed you from that night.') });
+  }
+
   needManager();
+  if (path === '/lounge/venue/set') {
+    const num = (v, k) => { if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > 100000) fail(`${k} is not a valid position.`); return Math.round(v * 100) / 100; };
+    const v = { room: str(d.room, 'Room', 60), x: num(d.x, 'x'), y: num(d.y, 'y'), z: num(d.z, 'z'), radius: whole(d.radius, 'Radius', 5, 300, 40), label: str(d.label, 'Label', 60, false) };
+    await setKv(db, 'venue', JSON.stringify(v));
+    return json({ lounge: await view(db, me, 'The venue spot is saved.') });
+  }
+  if (path === '/lounge/venue/clear') { await setKv(db, 'venue', ''); return json({ lounge: await view(db, me, 'The venue spot is cleared.') }); }
+  if (path === '/lounge/ad/save') { await setKv(db, 'ad_text', str(d.text, 'Advert', 400, false)); return json({ lounge: await view(db, me, 'Advert saved.') }); }
+  if (path === '/lounge/schedule/save') {
+    const a = Date.parse(d.startsAt), b = Date.parse(d.endsAt);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) fail('Start and end times are not valid.');
+    if (b <= a || b - a > 24 * 3600000) fail('A night must end after it starts and last at most 24 hours.');
+    if (a < Date.now() - 86400000) fail('That night is in the past.');
+    const note = str(d.note, 'Note', 200, false);
+    let id = d.id ? String(d.id) : '';
+    if (id) { const r = await db.prepare('UPDATE lounge_schedule SET starts_at = ?, ends_at = ?, note = ? WHERE id = ?').bind(iso(a), iso(b), note, id).run(); if (!r.meta.changes) fail('That night is gone.', 404); }
+    else {
+      if ((await db.prepare('SELECT count(*) AS n FROM lounge_schedule').first()).n >= 80) fail('The schedule is full. Remove old nights first.', 409);
+      id = rand(6); await db.prepare('INSERT INTO lounge_schedule (id, starts_at, ends_at, note) VALUES (?,?,?,?)').bind(id, iso(a), iso(b), note).run();
+    }
+    const old = iso(Date.now() - 60 * 86400000);
+    await db.prepare('DELETE FROM lounge_roster WHERE night_id IN (SELECT id FROM lounge_schedule WHERE ends_at < ?)').bind(old).run();
+    await db.prepare('DELETE FROM lounge_schedule WHERE ends_at < ?').bind(old).run();
+    return json({ lounge: await view(db, me, 'Night saved.') });
+  }
+  if (path === '/lounge/schedule/delete') {
+    const id = str(d.id, 'Night', 20);
+    await db.prepare('DELETE FROM lounge_roster WHERE night_id = ?').bind(id).run();
+    await db.prepare('DELETE FROM lounge_schedule WHERE id = ?').bind(id).run();
+    return json({ lounge: await view(db, me, 'Night removed.') });
+  }
+  if (path === '/lounge/roster/set') {
+    const n = await db.prepare('SELECT id FROM lounge_schedule WHERE id = ?').bind(str(d.nightId, 'Night', 20)).first();
+    if (!n) fail('That night is no longer on the schedule.', 404);
+    const m = await memberByName(db, d.name);
+    if (d.status === 'working') await db.prepare("INSERT INTO lounge_roster (night_id, member_id, status) VALUES (?,?,'working') ON CONFLICT(night_id, member_id) DO UPDATE SET status = 'working'").bind(n.id, m.id).run();
+    else if (d.status === 'available') await db.prepare("INSERT INTO lounge_roster (night_id, member_id, status) VALUES (?,?,'available') ON CONFLICT(night_id, member_id) DO UPDATE SET status = 'available'").bind(n.id, m.id).run();
+    else await db.prepare('DELETE FROM lounge_roster WHERE night_id = ? AND member_id = ?').bind(n.id, m.id).run();
+    return json({ lounge: await view(db, me, 'Roster updated.') });
+  }
   if (path === '/lounge/pf/save') {
     await setKv(db, 'pf_text', str(d.text, 'Party Finder text', 192, false));
     await setKv(db, 'pf_minutes', String(whole(d.minutes, 'Minutes', 5, 120, 55)));
