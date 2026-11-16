@@ -129,7 +129,7 @@ function fightView(q, st, me, f, status, extra = {}) {
   const spec = st.fight;
   return { questId: q.quest_id, npc: st.npc, playerName: me.name, playerHp: f.player_hp, playerMax: spec.playerHp, npcHp: f.npc_hp, npcMax: spec.npcHp, log: JSON.parse(f.log), status, ...extra };
 }
-async function insertGift(db, ownerId, f) {
+export async function insertGift(db, ownerId, f) {
   const id = rand(8);
   const r = await db.prepare("INSERT INTO items (id, owner_id, creator_id, name, icon, description, flavor, use_label, use_text, requires, requires_consume, st_name, st_desc, st_icon, st_debuff, st_minutes, st_type, st_cure, cures, recipe, consumable, created_at) SELECT ?,?,'dm',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM items WHERE owner_id = ?) < ?")
     .bind(id, ownerId, f.name, f.icon, f.description, f.flavor, f.useLabel, f.useText, f.requires, f.requiresConsume, f.stName, f.stDesc, f.stIcon, f.stDebuff, f.stMinutes, f.stType, f.stCure, f.cures, '', f.consumable, new Date().toISOString(), ownerId, CAP * STACK).run();

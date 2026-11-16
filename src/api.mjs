@@ -10,6 +10,7 @@ import { handleMail } from './mail.mjs';
 import { handleArmory } from './armory.mjs';
 import { handleProfiles } from './profiles.mjs';
 import { handleReports } from './reports.mjs';
+import { handleLounge } from './lounge.mjs';
 import { handleMarks } from './marks.mjs';
 import { handleWipe } from './wipe.mjs';
 import { handleDuels } from './duels.mjs';
@@ -97,6 +98,7 @@ async function handleInner(request,db,createPassword,memberPassword,bankPassword
     if (path === '/duels' || path.startsWith('/duels/')) return await handleDuels(request,db,path,{ json,input,rate });
     if (path.startsWith('/system/')) return await handleWipe(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path.startsWith('/marks/')) return await handleMarks(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
+    if (path === '/lounge' || path.startsWith('/lounge/')) return await handleLounge(request,db,path,{ json,input,rate });
     if (path === '/reports' || path.startsWith('/reports/')) return await handleReports(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/profile' || path === '/profiles' || path.startsWith('/profile/')) return await handleProfiles(request,db,path,{ json,input,rate,ip,checkCreate:supplied => checkCreate(supplied,createPassword) });
     if (path === '/armory' || path.startsWith('/armory/')) return await handleArmory(request,db,path,{ json,input,rate });
