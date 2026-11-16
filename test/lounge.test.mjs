@@ -28,7 +28,7 @@ test('the lounge: menu, clock in and out, sales with a handed-over item, receipt
   assert.equal((await L(bar,'POST','/sell',{menuId:menu[1].id,to:'Rune'})).status,400);   // no item to hand over
   r=await L(bar,'POST','/sell',{menuId:menu[1].id});assert.equal(r.lounge.me.soldCount,3);
   r=await L(bar,'POST','/undo',{});assert.equal(r.lounge.me.soldCount,2);
-  r=await L(boss,'GET','');assert.deepEqual(r.lounge.tonight,{items:[{name:'Hot cocoa',price:150,count:2,total:300,by:[{name:'Kael',count:2}]}],count:2,total:300});
+  r=await L(boss,'GET','');assert.deepEqual({items:r.lounge.tonight.items,count:r.lounge.tonight.count,total:r.lounge.tonight.total},{items:[{name:'Hot cocoa',price:150,count:2,total:300,by:[{name:'Kael',count:2}]}],count:2,total:300});
   assert.equal((await L(bar,'GET','')).lounge.tonight,undefined);
   db.sqlite.exec("UPDATE lounge_shifts SET start_at = '"+new Date(Date.now()-105*60000).toISOString()+"'");   // 1h45m ago
   assert.equal((await L(bar,'POST','/pay',{name:'Kael'})).status,403);
@@ -38,7 +38,16 @@ test('the lounge: menu, clock in and out, sales with a handed-over item, receipt
   r=await L(boss,'POST','/pay',{name:'Kael'});assert.equal(r.status,200);
   assert.equal((await call('GET','/bank/me',undefined,bar)).gold,10500);
   assert.equal((await L(boss,'POST','/pay',{name:'Kael'})).status,409);                       // never paid twice
-  assert.equal((await L(boss,'POST','/newnight',{})).lounge.tonight.count,0);
+  const closed=await L(boss,'POST','/newnight',{});assert.equal(closed.lounge.tonight.count,0);
+  assert.equal(closed.night.count,2);assert.equal(closed.night.total,300);assert.deepEqual(closed.night.items[0].by,[{name:'Kael',count:2}]);assert.equal(closed.night.people[0].minutes,105);
+  const past=(await L(boss,'GET','')).lounge.nights;assert.equal(past.length,1);assert.equal(past[0].total,300);
+  assert.deepEqual((await L(boss,'POST','/night',{id:past[0].id})).night.items[0].name,'Hot cocoa');
+  assert.equal((await L(bar,'POST','/night',{id:past[0].id})).status,403);
+  assert.equal((await L(bar,'GET','')).lounge.nights,undefined);
+  assert.equal((await L(bar,'POST','/pf/save',{text:'Hi',minutes:55})).status,403);
+  assert.equal((await L(boss,'POST','/pf/save',{text:'x'.repeat(193)})).status,400);
+  assert.equal((await L(boss,'POST','/pf/save',{text:'Embershade Lounge is open! All welcome.',minutes:50})).status,200);
+  let pf=(await L(bar,'POST','/pf/posted',{})).lounge.pf;assert.equal(pf.text,'Embershade Lounge is open! All welcome.');assert.equal(pf.minutes,50);assert.equal(pf.postedBy,'Kael');assert.ok(pf.postedAt);
   // two sellers: everyone who worked shows on every item, with zeros
   await L(bar,'POST','/clock',{in:true});await L(boss,'POST','/clock',{in:true});await L(boss,'POST','/sell',{menuId:menu[0].id,qty:3});await L(boss,'POST','/sell',{menuId:menu[1].id,qty:1});
   const by=(await L(boss,'GET','')).lounge.tonight.items;assert.deepEqual(by.find(i=>i.name==='Hot cocoa').by,[{name:'Kael',count:0},{name:'Mira',count:3}]);assert.deepEqual(by.find(i=>i.name==='Noodle bowl').by,[{name:'Kael',count:0},{name:'Mira',count:1}]);

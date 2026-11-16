@@ -14,7 +14,24 @@ const kv = async (db, k, dflt = '') => (await db.prepare('SELECT v FROM lounge_k
 const setKv = (db, k, v) => db.prepare('INSERT INTO lounge_kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').bind(k, v).run();
 const shiftGold = s => Math.floor(s.minutes * s.rate / 60);
 
-async function view(db, me, msg = '') {
+
+// Everything sold since the night began: per item with who sold how many (everyone who worked or sold appears on every item, zeros included),
+// per person totals, and hours worked. Used by the live receipt book and saved when a night is closed.
+async function tonight(db, nightStart) {
+  const sold = (await db.prepare('SELECT s.name, s.price, m.name AS who, sum(s.qty) AS count FROM lounge_sales s JOIN members m ON m.id = s.member_id WHERE s.at >= ? GROUP BY s.name, s.price, m.name').bind(nightStart).all()).results;
+  const shifts = (await db.prepare('SELECT m.name, s.minutes, s.end_at FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.start_at >= ? OR s.end_at IS NULL').bind(nightStart).all()).results;
+  const people = [...new Set([...shifts.map(r => r.name), ...sold.map(r => r.who)])].sort((x, y) => x.localeCompare(y));
+  const items = (await db.prepare('SELECT name, price, sum(qty) AS count FROM lounge_sales WHERE at >= ? GROUP BY name, price ORDER BY name').bind(nightStart).all()).results.map(r => ({
+    name: r.name, price: r.price, count: r.count, total: r.count * r.price,
+    by: people.map(who => ({ name: who, count: sold.find(x => x.name === r.name && x.price === r.price && x.who === who)?.count ?? 0 })),
+  }));
+  return {
+    items, count: items.reduce((n, i) => n + i.count, 0), total: items.reduce((n, i) => n + i.total, 0),
+    people: people.map(name => ({ name, count: sold.filter(x => x.who === name).reduce((n, x) => n + x.count, 0), total: sold.filter(x => x.who === name).reduce((n, x) => n + x.count * x.price, 0), minutes: shifts.filter(x => x.name === name).reduce((n, x) => n + x.minutes, 0) })),
+  };
+}
+
+async function view(db, me, msg = '', extra = {}) {
   const manager = isManager(me), nightStart = await kv(db, 'night_start', '1970-01-01T00:00:00.000Z');
   const menu = (await db.prepare('SELECT * FROM lounge_menu ORDER BY rowid').all()).results.map(m => ({ id: m.id, name: m.name, price: m.price, description: m.description, gift: m.gift ? JSON.parse(m.gift) : null }));
   const working = (await db.prepare('SELECT s.start_at, m.name FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.end_at IS NULL ORDER BY s.start_at LIMIT 100').all()).results.map(r => ({ name: r.name, since: r.start_at }));
@@ -22,19 +39,12 @@ async function view(db, me, msg = '') {
   const unpaid = (await db.prepare('SELECT minutes, rate FROM lounge_shifts WHERE member_id = ? AND paid = 0 AND end_at IS NOT NULL').bind(me.id).all()).results;
   const mine = await db.prepare('SELECT coalesce(sum(qty), 0) AS count, coalesce(sum(qty * price), 0) AS total FROM lounge_sales WHERE member_id = ? AND at >= ?').bind(me.id, nightStart).first();
   const out = {
-    msg, canManage: manager, hours: await kv(db, 'hours'), rate: Number(await kv(db, 'rate', '0')), nightStart, menu, working,
+    ...extra, msg, canManage: manager, pf: { text: await kv(db, 'pf_text'), minutes: Number(await kv(db, 'pf_minutes', '55')), postedAt: await kv(db, 'pf_posted_at'), postedBy: await kv(db, 'pf_posted_by') }, hours: await kv(db, 'hours'), rate: Number(await kv(db, 'rate', '0')), nightStart, menu, working,
     me: { since: open ? open.start_at : '', unpaidMinutes: unpaid.reduce((n, s) => n + s.minutes, 0), unpaidGold: unpaid.reduce((n, s) => n + shiftGold(s), 0), soldCount: mine.count, soldTotal: mine.total },
   };
   if (manager) {
-    // who sold what: every item lists everyone who sold anything or worked a shift tonight, with zeros where they sold none
-    const sold = (await db.prepare('SELECT s.name, s.price, m.name AS who, sum(s.qty) AS count FROM lounge_sales s JOIN members m ON m.id = s.member_id WHERE s.at >= ? GROUP BY s.name, s.price, m.name').bind(nightStart).all()).results;
-    const worked = (await db.prepare('SELECT DISTINCT m.name FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.start_at >= ? OR s.end_at IS NULL').bind(nightStart).all()).results.map(r => r.name);
-    const people = [...new Set([...worked, ...sold.map(r => r.who)])].sort((x, y) => x.localeCompare(y));
-    const items = (await db.prepare('SELECT name, price, sum(qty) AS count FROM lounge_sales WHERE at >= ? GROUP BY name, price ORDER BY name').bind(nightStart).all()).results.map(r => ({
-      name: r.name, price: r.price, count: r.count, total: r.count * r.price,
-      by: people.map(who => ({ name: who, count: sold.find(x => x.name === r.name && x.price === r.price && x.who === who)?.count ?? 0 })),
-    }));
-    out.tonight = { items, count: items.reduce((n, i) => n + i.count, 0), total: items.reduce((n, i) => n + i.total, 0) };
+    out.tonight = await tonight(db, nightStart);
+    out.nights = (await db.prepare('SELECT id, closed_at, sold, total FROM lounge_nights ORDER BY closed_at DESC LIMIT 52').all()).results.map(r => ({ id: r.id, closedAt: r.closed_at, count: r.sold, total: r.total }));
     const staff = new Map();
     const rows = (await db.prepare("SELECT m.name, s.minutes, s.rate, s.end_at FROM lounge_shifts s JOIN members m ON m.id = s.member_id WHERE s.end_at IS NULL OR s.paid = 0 LIMIT 500").all()).results;
     for (const r of rows) {
@@ -104,7 +114,22 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     return json({ lounge: await view(db, me, `Took back ${last.qty} ${last.name}.`) });
   }
 
+  if (path === '/lounge/pf/posted') {
+    await setKv(db, 'pf_posted_at', iso(Date.now())); await setKv(db, 'pf_posted_by', me.name);
+    return json({ lounge: await view(db, me, 'Thank you! The reminder will tell you when to refresh the listing.') });
+  }
+
   needManager();
+  if (path === '/lounge/pf/save') {
+    await setKv(db, 'pf_text', str(d.text, 'Party Finder text', 192, false));
+    await setKv(db, 'pf_minutes', String(whole(d.minutes, 'Minutes', 5, 120, 55)));
+    return json({ lounge: await view(db, me, 'Party Finder text saved.') });
+  }
+  if (path === '/lounge/night') {
+    const r = await db.prepare('SELECT report FROM lounge_nights WHERE id = ?').bind(str(d.id, 'Night', 20)).first();
+    if (!r) fail('That night is no longer saved.', 404);
+    return json({ lounge: await view(db, me), night: JSON.parse(r.report) });
+  }
   if (path === '/lounge/info') {
     await setKv(db, 'hours', str(d.hours, 'Hours', 300, false));
     await setKv(db, 'rate', String(whole(d.rate, 'The hourly pay', 0, MAX_AMOUNT, 0)));
@@ -144,11 +169,18 @@ export async function handleLounge(request, db, path, { json, input, rate }) {
     return json({ lounge: await view(db, me, `Paid ${m.name} ${total.toLocaleString('en-US')} gold into their bank.`) });
   }
   if (path === '/lounge/newnight') {
-    const now = Date.now(), cutoff = iso(now - KEEP_DAYS * 86400000);
+    const now = Date.now(), cutoff = iso(now - KEEP_DAYS * 86400000), start = await kv(db, 'night_start', '1970-01-01T00:00:00.000Z');
+    const t = await tonight(db, start);
+    let night = null;
+    if (t.count > 0 || t.people.length > 0) {
+      night = { nightStart: start, closedAt: iso(now), closedBy: me.name, ...t };
+      await db.prepare('INSERT INTO lounge_nights (id, closed_at, closed_by, sold, total, report) VALUES (?,?,?,?,?,?)').bind(rand(6), night.closedAt, me.name, t.count, t.total, JSON.stringify(night)).run();
+      await db.prepare('DELETE FROM lounge_nights WHERE id NOT IN (SELECT id FROM lounge_nights ORDER BY closed_at DESC LIMIT 300)').run();
+    }
     await setKv(db, 'night_start', iso(now));
     await db.prepare('DELETE FROM lounge_sales WHERE at < ?').bind(cutoff).run();
     await db.prepare('DELETE FROM lounge_shifts WHERE paid = 1 AND end_at < ?').bind(cutoff).run();
-    return json({ lounge: await view(db, me, 'A new night has started. The receipt book is clear.') });
+    return json({ lounge: await view(db, me, night ? 'The night is saved to Past nights. A new night has started.' : 'A new night has started. The receipt book is clear.'), night });
   }
   fail('Endpoint not found.', 404);
 }

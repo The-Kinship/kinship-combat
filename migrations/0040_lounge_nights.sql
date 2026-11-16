@@ -1,0 +1,1 @@
+CREATE TABLE lounge_nights (id TEXT PRIMARY KEY NOT NULL, closed_at TEXT NOT NULL, closed_by TEXT NOT NULL, sold INTEGER NOT NULL, total INTEGER NOT NULL, report TEXT NOT NULL);
